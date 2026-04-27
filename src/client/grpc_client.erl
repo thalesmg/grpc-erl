@@ -818,7 +818,7 @@ pick(ChannName, Key) ->
     gproc_pool:pick_worker(ChannName, Key).
 
 assemble_grpc_headers(Encoding, MessageType, Timeout, MD) ->
-    [{<<"content-type">>, <<"application/grpc+proto">>},
+    [{<<"content-type">>, <<"application/grpc">>},
      {<<"user-agent">>, <<"grpc-erlang/0.1.0">>},
      {<<"grpc-encoding">>, Encoding},
      {<<"grpc-message-type">>, MessageType},
