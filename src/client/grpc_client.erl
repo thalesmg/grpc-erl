@@ -342,7 +342,9 @@ handle_call({open, #{path := Path,
             _From,
             State = #state{gun_pid = GunPid, streams = Streams, encoding = Encoding}) ->
     Timeout = maps:get(timeout, Options, infinity),
+    ContentType = maps:get(content_type, Options, <<"application/grpc+proto">>),
     Headers = assemble_grpc_headers(atom_to_binary(Encoding, utf8),
+                                    ContentType,
                                     MessageType,
                                     Timeout,
                                     Metadata
@@ -817,8 +819,8 @@ call_result(_ExitOnCrash = false, Reason) ->
 pick(ChannName, Key) ->
     gproc_pool:pick_worker(ChannName, Key).
 
-assemble_grpc_headers(Encoding, MessageType, Timeout, MD) ->
-    [{<<"content-type">>, <<"application/grpc">>},
+assemble_grpc_headers(Encoding, ContentType, MessageType, Timeout, MD) ->
+    [{<<"content-type">>, ContentType},
      {<<"user-agent">>, <<"grpc-erlang/0.1.0">>},
      {<<"grpc-encoding">>, Encoding},
      {<<"grpc-message-type">>, MessageType},
