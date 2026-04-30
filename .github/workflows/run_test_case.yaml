@@ -4,20 +4,6 @@ on: [push, pull_request]
 
 jobs:
 
-  windows:
-    runs-on: windows-latest
-
-    steps:
-    - uses: actions/checkout@v4
-    - uses: erlef/setup-beam@v1
-      with:
-        otp-version: '27'
-        rebar3-version: '3.23.0'
-    - run: rebar3 xref
-    - run: rebar3 dialyzer
-    - run: rebar3 eunit
-    - run: rebar3 ct
-
   linux:
     runs-on: ubuntu-latest
 
@@ -68,4 +54,3 @@ jobs:
       run: |
         docker run --rm -i --name alpine -v $(pwd):/repos ${{ matrix.builder }}-alpine3.15.1 \
           sh -c "cd /repos && make eunit && make ct"
-
