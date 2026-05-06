@@ -27,6 +27,7 @@
 -export([ open/3
         , send/2
         , send/3
+        , send/4
         , recv/1
         , recv/2
         ]).
