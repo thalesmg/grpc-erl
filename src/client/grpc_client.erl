@@ -32,6 +32,8 @@
         , recv/2
         ]).
 
+-export([trailers_to_error/1]).
+
 -export([start_link/4]).
 
 %% gen_server callbacks
