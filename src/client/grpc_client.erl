@@ -87,6 +87,9 @@
          %% The grpc-encoding method
          %% Default is identity
          , encoding => grpc_frame:encoding()
+         %% Content type to use in grpc header.
+         %% Default is `application/grpc+json`
+         , content_type => binary()
          %% The timeout to receive the response of request. The clock starts
          %% ticking when the request is sent
          %%
