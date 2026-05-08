@@ -699,7 +699,17 @@ do_connect(State0 = #state{server = {_, Host, Port}, client_opts = ClientOpts}) 
     end.
 
 ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
+    MRef = monitor(process, Pid),
     _ = gun:close(Pid),
+    receive
+        {'DOWN', MRef, process, Pid, _} ->
+            ok
+    after
+        1_000 ->
+            exit(Pid, kill),
+            receive {'DOWN', MRef, process, Pid, _} -> ok end,
+            ok
+    end,
     State0#state{gun_pid = undefined};
 ensure_gun_stopped(#state{} = State0) ->
     State0.
