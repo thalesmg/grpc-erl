@@ -675,7 +675,8 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
 %% Internal funcs
 %%--------------------------------------------------------------------
 
-do_connect(State = #state{server = {_, Host, Port}, client_opts = ClientOpts}) ->
+do_connect(State0 = #state{server = {_, Host, Port}, client_opts = ClientOpts}) ->
+    State = ensure_gun_stopped(State0),
     GunOpts = maps:get(gun_opts, ClientOpts, #{}),
     case gun:open(Host, Port, GunOpts) of
         {ok, Pid} ->
@@ -696,6 +697,12 @@ do_connect(State = #state{server = {_, Host, Port}, client_opts = ClientOpts}) -
         {error, Reason} ->
             {error, Reason}
     end.
+
+ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
+    _ = gun:close(Pid),
+    State0#state{gun_pid = undefined};
+ensure_gun_stopped(#state{} = State0) ->
+    State0.
 
 %%--------------------------------------------------------------------
 %% Helpers

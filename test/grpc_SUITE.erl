@@ -35,7 +35,14 @@ all() ->
     [{group, http}, {group, https}].
 
 groups() ->
-    Tests = [t_say_hello, t_get_feature, t_list_features, t_record_route, t_record_chat],
+    Tests = [
+        t_say_hello,
+        t_get_feature,
+        t_list_features,
+        t_record_route,
+        t_record_chat,
+        t_reconnect_no_gun_leak
+    ],
     [{http, Tests}, {https,Tests}].
 
 init_per_group(GrpName, Cfg) ->
@@ -71,7 +78,7 @@ init_per_group(GrpName, Cfg) ->
 
     {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, Options),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, SvrAddr, ClientOps),
-    Cfg.
+    [{services, Services}, {server_opts, Options} | Cfg].
 
 end_per_group(_GrpName, _Cfg) ->
     _ = grpc_client_sup:stop_channel_pool(?CHANN_NAME),
@@ -123,6 +130,27 @@ t_record_chat(_) ->
         recv_n(Stream, 4)
     ).
 
+t_reconnect_no_gun_leak(TCConfig) ->
+    %% sanity check: we have some connections already.
+    PidsBefore = get_gun_pids(),
+    ?assertMatch([_ | _], PidsBefore),
+    Worker0 = gproc_pool:pick_worker(?CHANN_NAME, key),
+    ?assertMatch(ok, grpc_client:health_check(Worker0, #{connect_timeout => 100})),
+    %% make gun become disconnected
+    _ = grpc:stop_server(?SERVER_NAME),
+    ?assertMatch({error, _}, grpc_client:health_check(Worker0, #{connect_timeout => 100})),
+    %% reconnect
+    {services, Services} = lists:keyfind(services, 1, TCConfig),
+    {server_opts, Options} = lists:keyfind(server_opts, 1, TCConfig),
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, Options),
+    ?assertMatch(ok, grpc_client:health_check(Worker0, #{connect_timeout => 10_000})),
+    %% should not have leaked pids
+    PidsAfter = get_gun_pids(),
+    ?assertNot(length(PidsAfter) > length(PidsBefore), #{pids_before => PidsBefore,
+                                                         pids_after => PidsAfter,
+                                                         new_pids => PidsAfter -- PidsBefore}),
+    ok.
+
 %%--------------------------------------------------------------------
 %% Helper functions
 %%--------------------------------------------------------------------
@@ -135,3 +163,6 @@ recv_n(_Stream, 0, Acc) ->
 recv_n(Stream, N, Acc) ->
     {ok, Fs} = grpc_client:recv(Stream),
     recv_n(Stream, N - length(Fs), Acc ++ Fs).
+
+get_gun_pids() ->
+    [Pid || {_, Pid, _, _} <- supervisor:which_children(gun_conns_sup)].
