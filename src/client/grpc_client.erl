@@ -139,6 +139,11 @@
 -define(DEFAULT_STREAMING_DELAY, 20).
 -define(DEFAULT_STREAMING_BATCH_SIZE, 16384).
 
+-define(IS_SILENCED_STREAM_ERROR(ERR),
+    ((ERR) =:= {stream_error,no_error,'Stream reset by server.'} orelse
+     (ERR) =:= {stream_error,refused_stream,'Stream reset by server.'})
+).
+
 -type stream_state() :: idle | open | closed.
 
 -type stream() :: #{ st       := {LocalState :: stream_state(),
@@ -547,17 +552,17 @@ handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
     {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
 % shutdown on gun error
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State)
-    when Reason =:= normal orelse Reason =:= {stream_error,no_error,'Stream reset by server.'} ->
+    when Reason =:= normal orelse ?IS_SILENCED_STREAM_ERROR(Reason) ->
     ?LOG(debug, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State) ->
     ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 % self-induced shutdown
-handle_stream_handle_result({shutdown, _Reason, Events, _Stream}, StreamRef, Streams, State) ->
-    _Reason /= normal andalso
+handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Streams, State) ->
+    (Reason /= normal andalso not ?IS_SILENCED_STREAM_ERROR(Reason)) andalso
         ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s",
-             [_Reason, format_stream(_Stream)]),
+             [Reason, format_stream(_Stream)]),
     _ = run_events(Events),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}}.
 
