@@ -554,9 +554,11 @@ handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State)
     when Reason =:= normal orelse ?IS_SILENCED_STREAM_ERROR(Reason) ->
     ?LOG(debug, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
+    reply_hangs(Stream, {error, Reason}),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State) ->
     ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
+    reply_hangs(Stream, {error, Reason}),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 % self-induced shutdown
 handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Streams, State) ->
@@ -675,6 +677,11 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
     Nowts = erlang:system_time(millisecond),
     Hangs1 = lists:filter(fun({_, T}) -> T >= Nowts end, Hangs),
     Stream#{hangs => Hangs1}.
+
+%% if there are any calls waiting on us, we must reply them.
+reply_hangs(DroppedStream, Result) ->
+    #{hangs := Hangs} = DroppedStream,
+    lists:foreach(fun({From, _EndTs}) -> gen_server:reply(From, Result) end, Hangs).
 
 %%--------------------------------------------------------------------
 %% Internal funcs
