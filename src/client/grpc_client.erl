@@ -140,7 +140,8 @@
 -define(DEFAULT_STREAMING_BATCH_SIZE, 16384).
 
 -define(IS_SILENCED_STREAM_ERROR(ERR),
-    ((ERR) =:= {stream_error,no_error,'Stream reset by server.'} orelse
+    ((ERR) =:= normal orelse
+     (ERR) =:= {stream_error,no_error,'Stream reset by server.'} orelse
      (ERR) =:= {stream_error,refused_stream,'Stream reset by server.'} orelse
      (ERR) =:= {closed,{error,closed}} orelse
      (ERR) =:= closed orelse
@@ -563,7 +564,7 @@ handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
     {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
 % shutdown on gun error
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State)
-    when Reason =:= normal orelse ?IS_SILENCED_STREAM_ERROR(Reason) ->
+    when ?IS_SILENCED_STREAM_ERROR(Reason) ->
     ?LOG(debug, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
     reply_hangs(Stream, {error, Reason}),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
@@ -573,7 +574,7 @@ handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, Stat
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 % self-induced shutdown
 handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Streams, State) ->
-    (Reason /= normal andalso not ?IS_SILENCED_STREAM_ERROR(Reason)) andalso
+    ?IS_SILENCED_STREAM_ERROR(Reason) orelse
         ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s",
              [Reason, format_stream(_Stream)]),
     _ = run_events(Events),
