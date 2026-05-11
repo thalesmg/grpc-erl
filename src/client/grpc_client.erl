@@ -713,16 +713,18 @@ do_connect(State0 = #state{server = {_, Host, Port}, client_opts = ClientOpts}) 
                 {ok, _Protocol} ->
                     State#state{mref = MRef, gun_pid = Pid, gun_state = up};
                 {error, {down, Reason}} ->
+                    demonitor(MRef, [flush]),
                     {error, Reason};
                 {error, timeout} ->
                     _ = gun:close(Pid),
+                    demonitor(MRef, [flush]),
                     {error, timeout}
             end;
         {error, Reason} ->
             {error, Reason}
     end.
 
-ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
+ensure_gun_stopped(#state{mref = OldMRef, gun_pid = Pid} = State0) when is_pid(Pid) ->
     MRef = monitor(process, Pid),
     _ = gun:close(Pid),
     receive
@@ -734,7 +736,8 @@ ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
             receive {'DOWN', MRef, process, Pid, _} -> ok end,
             ok
     end,
-    State0#state{gun_pid = undefined};
+    is_reference(OldMRef) andalso demonitor(OldMRef, [flush]),
+    State0#state{mref = undefined, gun_pid = undefined};
 ensure_gun_stopped(#state{} = State0) ->
     State0.
 
