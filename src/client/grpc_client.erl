@@ -141,7 +141,10 @@
 
 -define(IS_SILENCED_STREAM_ERROR(ERR),
     ((ERR) =:= {stream_error,no_error,'Stream reset by server.'} orelse
-     (ERR) =:= {stream_error,refused_stream,'Stream reset by server.'})
+     (ERR) =:= {stream_error,refused_stream,'Stream reset by server.'} orelse
+     (ERR) =:= {closed,{error,closed}} orelse
+     (ERR) =:= closed orelse
+     (ERR) =:= {goaway,protocol_error,'The connection is going away.'})
 ).
 
 -type stream_state() :: idle | open | closed.
@@ -477,7 +480,8 @@ handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
                 _ ->
                     case maps:get(StreamRef, Streams, undefined) of
                         undefined ->
-                            ?LOG(warning, "[gRPC Client] Unknown stream ref: ~0p, "
+                            LogLevel = unknown_stream_ref_log_level(Info),
+                            ?LOG(LogLevel, "[gRPC Client] Unknown stream ref: ~0p, "
                                           "event: ~0p", [StreamRef, Info]),
                             {noreply, State};
                         Stream ->
@@ -492,6 +496,13 @@ handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
             ?LOG(warning, "[gRPC Client] Unexpected info: ~p~n", [Info]),
             {noreply, State}
     end.
+
+unknown_stream_ref_log_level({gun_error, _, _, {stream_error,no_error,'Stream reset by server.'}}) ->
+    debug;
+unknown_stream_ref_log_level({gun_error, _, _, {closed,{error,closed}}}) ->
+    debug;
+unknown_stream_ref_log_level(_) ->
+    warning.
 
 terminate(_Reason, #state{pool = Pool, id = Id}) ->
     gproc_pool:disconnect_worker(Pool, {Pool, Id}).
