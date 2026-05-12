@@ -563,13 +563,13 @@ handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
     _ = run_events(Events),
     {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
 % shutdown on gun error
-handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State)
-    when ?IS_SILENCED_STREAM_ERROR(Reason) ->
-    ?LOG(debug, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
-    reply_hangs(Stream, {error, Reason}),
-    {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State) ->
-    ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
+    LogLevel =
+        case ?IS_SILENCED_STREAM_ERROR(Reason) of
+            true -> debug;
+            false -> warning
+        end,
+    ?LOG(LogLevel, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
     reply_hangs(Stream, {error, Reason}),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 % self-induced shutdown
