@@ -139,6 +139,15 @@
 -define(DEFAULT_STREAMING_DELAY, 20).
 -define(DEFAULT_STREAMING_BATCH_SIZE, 16384).
 
+-define(IS_SILENCED_STREAM_ERROR(ERR),
+    ((ERR) =:= normal orelse
+     (ERR) =:= {stream_error,no_error,'Stream reset by server.'} orelse
+     (ERR) =:= {stream_error,refused_stream,'Stream reset by server.'} orelse
+     (ERR) =:= {closed,{error,closed}} orelse
+     (ERR) =:= closed orelse
+     (ERR) =:= {goaway,protocol_error,'The connection is going away.'})
+).
+
 -type stream_state() :: idle | open | closed.
 
 -type stream() :: #{ st       := {LocalState :: stream_state(),
@@ -472,7 +481,8 @@ handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
                 _ ->
                     case maps:get(StreamRef, Streams, undefined) of
                         undefined ->
-                            ?LOG(warning, "[gRPC Client] Unknown stream ref: ~0p, "
+                            LogLevel = unknown_stream_ref_log_level(Info),
+                            ?LOG(LogLevel, "[gRPC Client] Unknown stream ref: ~0p, "
                                           "event: ~0p", [StreamRef, Info]),
                             {noreply, State};
                         Stream ->
@@ -487,6 +497,13 @@ handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
             ?LOG(warning, "[gRPC Client] Unexpected info: ~p~n", [Info]),
             {noreply, State}
     end.
+
+unknown_stream_ref_log_level({gun_error, _, _, {stream_error,no_error,'Stream reset by server.'}}) ->
+    debug;
+unknown_stream_ref_log_level({gun_error, _, _, {closed,{error,closed}}}) ->
+    debug;
+unknown_stream_ref_log_level(_) ->
+    warning.
 
 terminate(_Reason, #state{pool = Pool, id = Id}) ->
     gproc_pool:disconnect_worker(Pool, {Pool, Id}).
@@ -546,18 +563,20 @@ handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
     _ = run_events(Events),
     {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
 % shutdown on gun error
-handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State)
-    when Reason =:= normal orelse Reason =:= {stream_error,no_error,'Stream reset by server.'} ->
-    ?LOG(debug, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
-    {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State) ->
-    ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
+    LogLevel =
+        case ?IS_SILENCED_STREAM_ERROR(Reason) of
+            true -> debug;
+            false -> warning
+        end,
+    ?LOG(LogLevel, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
+    reply_hangs(Stream, {error, Reason}),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
 % self-induced shutdown
-handle_stream_handle_result({shutdown, _Reason, Events, _Stream}, StreamRef, Streams, State) ->
-    _Reason /= normal andalso
+handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Streams, State) ->
+    ?IS_SILENCED_STREAM_ERROR(Reason) orelse
         ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s",
-             [_Reason, format_stream(_Stream)]),
+             [Reason, format_stream(_Stream)]),
     _ = run_events(Events),
     {noreply, State#state{streams = maps:remove(StreamRef, Streams)}}.
 
@@ -671,6 +690,11 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
     Hangs1 = lists:filter(fun({_, T}) -> T >= Nowts end, Hangs),
     Stream#{hangs => Hangs1}.
 
+%% if there are any calls waiting on us, we must reply them.
+reply_hangs(DroppedStream, Result) ->
+    #{hangs := Hangs} = DroppedStream,
+    lists:foreach(fun({From, _EndTs}) -> gen_server:reply(From, Result) end, Hangs).
+
 %%--------------------------------------------------------------------
 %% Internal funcs
 %%--------------------------------------------------------------------
@@ -689,16 +713,18 @@ do_connect(State0 = #state{server = {_, Host, Port}, client_opts = ClientOpts}) 
                 {ok, _Protocol} ->
                     State#state{mref = MRef, gun_pid = Pid, gun_state = up};
                 {error, {down, Reason}} ->
+                    demonitor(MRef, [flush]),
                     {error, Reason};
                 {error, timeout} ->
                     _ = gun:close(Pid),
+                    demonitor(MRef, [flush]),
                     {error, timeout}
             end;
         {error, Reason} ->
             {error, Reason}
     end.
 
-ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
+ensure_gun_stopped(#state{mref = OldMRef, gun_pid = Pid} = State0) when is_pid(Pid) ->
     MRef = monitor(process, Pid),
     _ = gun:close(Pid),
     receive
@@ -710,7 +736,8 @@ ensure_gun_stopped(#state{gun_pid = Pid} = State0) when is_pid(Pid) ->
             receive {'DOWN', MRef, process, Pid, _} -> ok end,
             ok
     end,
-    State0#state{gun_pid = undefined};
+    is_reference(OldMRef) andalso demonitor(OldMRef, [flush]),
+    State0#state{mref = undefined, gun_pid = undefined};
 ensure_gun_stopped(#state{} = State0) ->
     State0.
 
