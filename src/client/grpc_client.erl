@@ -308,6 +308,7 @@ health_check(Worker, Options) ->
 %%--------------------------------------------------------------------
 
 init([Pool, Id, Server = {_, _, _}, ClientOpts0]) ->
+    process_flag(trap_exit, true),
     Encoding = maps:get(encoding, ClientOpts0, identity),
     GunOpts = maps:get(gun_opts, ClientOpts0, #{}),
     Opts = ClientOpts0#{gun_opts => maps:merge(?DEFAULT_GUN_OPTS, GunOpts)},
