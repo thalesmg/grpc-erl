@@ -440,28 +440,28 @@ handle_info({timeout, TRef, flush_streams_sendbuff},
 handle_info({gun_up, GunPid, http2}, State = #state{gun_pid = GunPid}) ->
     {noreply, State#state{gun_state = up}};
 
-handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
+handle_info({gun_down, GunPid, http2, Reason, _KilledStreamRefs},
             State = #state{gun_pid = GunPid, streams = Streams}) ->
     Nowts = erlang:system_time(millisecond),
     %% Reply killed streams error
-    _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
+    maps:foreach(fun(_, #{hangs := Hangs}) ->
         lists:foreach(fun({From, Endts}) ->
             Endts > Nowts andalso
               gen_server:reply(From, {error, {connection_down, Reason}})
         end, Hangs)
-    end, [], maps:with(KilledStreamRefs, Streams)),
-    {noreply, State#state{streams = maps:without(KilledStreamRefs, Streams),
+    end, Streams),
+    {noreply, State#state{streams = #{},
                           gun_state = down}};
 
 handle_info({'DOWN', MRef, process, GunPid, Reason},
             State = #state{mref = MRef, gun_pid = GunPid, streams = Streams}) ->
     Nowts = erlang:system_time(millisecond),
-    _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
+    maps:foreach(fun(_, #{hangs := Hangs}) ->
         lists:foreach(fun({From, Endts}) ->
             Endts > Nowts andalso
               gen_server:reply(From, {error, {connection_down, Reason}})
         end, Hangs)
-    end, [], Streams),
+    end, Streams),
     {noreply, State#state{gun_pid = undefined,
                           streams = #{},
                           gun_state = down}};
@@ -595,33 +595,40 @@ run_events([{reply, From, Msg}|Es]) ->
 
 stream_handle({read, From, _StreamRef, EndTs},
              Stream = #{mqueue := [], hangs := Hangs}) ->
-    {ok, Stream#{hangs => [{From, EndTs}|Hangs]}};
+    {ok, Stream#{hangs := [{From, EndTs}|Hangs]}};
 
 stream_handle({read, From, _StreamRef, _EndTs},
-              Stream = #{st := {_LS, open}, mqueue := MQueue}) when MQueue /= [] ->
-    {ok, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
+              Stream = #{st := {_LS, open}, hangs := Hangs, mqueue := MQueue}) when MQueue /= [] ->
+    Reply0 = {reply, From, {ok, MQueue}},
+    Replies = [Reply0 | [{reply, From0, {ok, MQueue}} || {From0, _} <- Hangs]],
+    {ok, Replies, Stream#{hangs := [], mqueue := []}};
 
 stream_handle({read, From, _StreamRef, _EndTs},
-    Stream = #{st := {_LS, closed}, mqueue := MQueue}) when MQueue /= [] ->
-    {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
+    Stream = #{st := {_LS, closed}, hangs := Hangs, mqueue := MQueue}) when MQueue /= [] ->
+    Reply0 = {reply, From, {ok, MQueue}},
+    Replies = [Reply0 | [{reply, From0, {ok, MQueue}} || {From0, _} <- Hangs]],
+    {shutdown, normal, Replies, Stream#{hangs := [], mqueue := []}};
 
 stream_handle({read, From, _StreamRef, _EndTs},
-              Stream = #{st := {closed, closed}, mqueue := MQueue}) ->
-    {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
+              Stream = #{st := {closed, closed}, hangs := Hangs, mqueue := MQueue}) ->
+    Reply0 = {reply, From, {ok, MQueue}},
+    Replies = [Reply0 | [{reply, From0, {ok, MQueue}} || {From0, _} <- Hangs]],
+    {shutdown, normal, Replies, Stream#{hangs := [], mqueue := []}};
 
 %% gun msgs
 
 stream_handle({gun_response, _GunPid, _StreamRef, IsFin, _Status, Headers},
-              Stream = #{st := {_LS, idle}}) ->
+              Stream = #{st := {LS, idle}}) ->
     case IsFin of
         nofin ->
-            {ok, Stream#{st => {_LS, open}}};
+            {ok, Stream#{st := {LS, open}}};
         fin ->
             handle_remote_closed(Headers, Stream)
     end;
 
 stream_handle({gun_trailers, _GunPid, _StreamRef, Trailers},
               Stream = #{st := {_LS, open}}) ->
+    %% should we clear recvbuff here?
     handle_remote_closed(Trailers, Stream);
 
 stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
@@ -631,13 +638,15 @@ stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
     NData = <<Acc/binary, Data/binary>>,
     case grpc_frame:split(NData, Encoding) of
         {Rest, []} ->
-            {ok, Stream#{recvbuff => Rest}};
+            {ok, Stream#{recvbuff := Rest}};
         {Rest, Frames} ->
-            case clean_hangs(Stream#{recvbuff => Rest}) of
+            case clean_hangs(Stream#{recvbuff := Rest}) of
                 NStream = #{hangs := [], mqueue := MQueue} ->
-                    {ok, NStream#{mqueue => MQueue ++ Frames}};
-                NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
-                    {ok, [{reply, From, {ok, MQueue ++ Frames}}], NStream#{hangs => NHangs}}
+                    {ok, NStream#{mqueue := MQueue ++ Frames}};
+                NStream = #{hangs := [{_, _}|_] = Hangs, mqueue := MQueue} ->
+                    Out = MQueue ++ Frames,
+                    Replies = [{reply, From0, {ok, Out}} || {From0, _} <- Hangs],
+                    {ok, Replies, NStream#{mqueue := [], hangs := []}}
             end
     end;
 
@@ -648,10 +657,10 @@ stream_handle({gun_data, _GunPid, _StreamRef, fin, Data},
     NData = <<Acc/binary, Data/binary>>,
     case grpc_frame:split(NData, Encoding) of
         {<<>>, []} ->
-            handle_remote_closed([], Stream);
+            handle_remote_closed([], Stream#{recvbuff := <<"">>});
         {<<>>, Frames} ->
             MQueue = maps:get(mqueue, Stream),
-            handle_remote_closed([], Stream#{recvbuff => <<>>, mqueue => MQueue ++ Frames})
+            handle_remote_closed([], Stream#{recvbuff := <<>>, mqueue := MQueue ++ Frames})
     end;
 
 stream_handle({gun_error, _GunPid, _StreamRef, {stream_error, no_error, 'Stream reset by server.'}},
@@ -661,27 +670,27 @@ stream_handle({gun_error, _GunPid, _StreamRef, Reason}, Stream) ->
     {shutdown, Reason, Stream};
 
 stream_handle(Info, Stream) ->
-    ?LOG(error, "Unexecpted stream event: ~p, stream ~0p", [Info, Stream]).
+    ?LOG(error, "Unexpected stream event: ~p, stream ~0p", [Info, Stream]).
 
 handle_remote_closed(Trailers, Stream = #{st := {closed, _}}) ->
-    case clean_hangs(Stream#{st => {closed, closed}}) of
-        NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
-            Events1 = [{reply, From, {ok, MQueue ++ [{eos, Trailers}]}}],
-            Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, NHangs),
-            {shutdown, normal, Events1 ++ Events2, NStream#{hangs => [], mqueue => []}};
+    case clean_hangs(Stream#{st := {closed, closed}}) of
+        NStream = #{hangs := [{_, _}|_] = Hangs, mqueue := MQueue} ->
+            Out = MQueue ++ [{eos, Trailers}],
+            Events1 = [{reply, From, {ok, Out}} || {From, _} <- Hangs],
+            {shutdown, normal, Events1, NStream#{hangs := [], mqueue := []}};
         NStream = #{hangs := [], mqueue := MQueue} ->
-            {ok, NStream#{mqueue => MQueue ++ [{eos, Trailers}],
+            {ok, NStream#{mqueue := MQueue ++ [{eos, Trailers}],
                           stopped => erlang:system_time(millisecond)}}
     end;
 
 handle_remote_closed(Trailers, Stream = #{st := {Ls, _}}) ->
-    case clean_hangs(Stream#{st => {Ls, closed}}) of
-        NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
-            Events1 = [{reply, From, {ok, MQueue ++ [{eos, Trailers}]}}],
-            Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, NHangs),
-            {ok, Events1 ++ Events2, NStream#{hangs => [], mqueue => []}};
+    case clean_hangs(Stream#{st := {Ls, closed}}) of
+        NStream = #{hangs := [{_, _}|_] = Hangs, mqueue := MQueue} ->
+            Out = MQueue ++ [{eos, Trailers}],
+            Events1 = [{reply, From, {ok, Out}} || {From, _} <- Hangs],
+            {ok, Events1, NStream#{hangs := [], mqueue := []}};
         NStream = #{hangs := [], mqueue := MQueue} ->
-            {ok, NStream#{mqueue => MQueue ++ [{eos, Trailers}]}}
+            {ok, NStream#{mqueue := MQueue ++ [{eos, Trailers}]}}
     end.
 
 clean_hangs(Stream = #{hangs := []}) ->
@@ -689,7 +698,7 @@ clean_hangs(Stream = #{hangs := []}) ->
 clean_hangs(Stream = #{hangs := Hangs}) ->
     Nowts = erlang:system_time(millisecond),
     Hangs1 = lists:filter(fun({_, T}) -> T >= Nowts end, Hangs),
-    Stream#{hangs => Hangs1}.
+    Stream#{hangs := Hangs1}.
 
 %% if there are any calls waiting on us, we must reply them.
 reply_hangs(DroppedStream, Result) ->
