@@ -208,17 +208,23 @@ unary(Def, Req, Metadata, Options) ->
 -spec open(def(), grpc:metadata(), options())
     -> {ok, grpcstream()}
      | {error, term()}.
-
-open(Def, Metadata, Options) ->
+open(Def, Metadata, Options0) ->
     ClientPid = pick(
-                  maps:get(channel, Options, undefined),
-                  maps:get(key_dispatch, Options, self())
+                  maps:get(channel, Options0, undefined),
+                  maps:get(key_dispatch, Options0, self())
                  ),
-    ConnectTimeout = connect_timeout(Options),
-    case call(ClientPid, {open, Def, Metadata, Options}, Options#{timeout => ConnectTimeout}) of
-        {ok, StreamRef} ->
-            {ok, #{stream_ref => StreamRef, client_pid => ClientPid, def => Def}};
-        {error, _} = Error -> Error
+    case ClientPid of
+        _ when is_pid(ClientPid) ->
+            ConnectTimeout = connect_timeout(Options0),
+            Options = Options0#{timeout => ConnectTimeout},
+            case call(ClientPid, {open, Def, Metadata, Options0}, Options) of
+                {ok, StreamRef} ->
+                    {ok, #{stream_ref => StreamRef, client_pid => ClientPid, def => Def}};
+                {error, _} = Error ->
+                    Error
+            end;
+        false ->
+            {error, no_workers}
     end.
 
 connect_timeout(Options) ->
