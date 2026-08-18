@@ -56,7 +56,7 @@ spec(Name, URL, Opts) ->
             Server = {Scheme, Host, Port},
             Spec = #{id       => Name,
                      start    => {?MODULE, start_link, [Name, Server, Opts]},
-                     restart  => transient,
+                     restart  => permanent,
                      shutdown => infinity,
                      type     => supervisor,
                      modules  => [?MODULE]},
@@ -92,8 +92,8 @@ init([Name, Server, Opts]) ->
             ensure_pool_worker(Name, {Name, I}, I),
             #{id => {Name, I},
               start => {grpc_client, start_link, [Name, I, Server, Opts]},
-              restart => transient,
-              shutdown => 5000,
+              restart => permanent,
+              shutdown => 5_000,
               type => worker,
               modules => [grpc_client]}
         end || I <- lists:seq(1, Size)]}}.
