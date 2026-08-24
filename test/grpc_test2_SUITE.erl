@@ -47,15 +47,13 @@ init_per_testcase(t_deadline, Cfg) ->
     {ok, _} = grpc:start_server(?SERVER_NAME, 10000, ?config(services, Cfg), []),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     Cfg;
-init_per_testcase(t_health_check, Cfg) ->
+init_per_testcase(_TestCase, Cfg) ->
     %% The case will handle the channel pool creation and server start by itself
     Cfg.
 
-end_per_testcase(t_deadline, _Cfg) ->
+end_per_testcase(_TestCase, _Cfg) ->
     _ = grpc_client_sup:stop_channel_pool(?CHANN_NAME),
     _ = grpc:stop_server(?SERVER_NAME),
-    ok;
-end_per_testcase(t_health_check, _Cfg) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -97,5 +95,69 @@ t_health_check(Cfg) ->
     ?assertNot(lists:all(WorkersHealthCheck, WorkersPid)),
 
     _ = grpc_client_sup:stop_channel_pool(?CHANN_NAME),
+
+    ok.
+
+t_close_stream(_TCConfig) ->
+    Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, []),
+    {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
+    TestPidBin = iolist_to_binary(pid_to_list(self())),
+
+    %% call
+    {ok, Stream1} =
+        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
+                                    #{channel => ?CHANN_NAME,
+                                      timeout => 2000}
+                                   ),
+    MRef1 =
+        receive
+            {grpc_req_enter, HandlerPid1, _GRPCReq1, _Meta1} ->
+                monitor(process, HandlerPid1)
+        after 3_000 ->
+                ct:fail("didn't enter the handler")
+        end,
+    ok = grpc_client:close(Stream1, #{}),
+    receive
+        {grpc_exit_signal, Reason1} ->
+            ct:pal("handler receive exit signal: ~p", [Reason1]),
+            ok
+    after 3_000 ->
+        ct:fail("handler didn't receive exit")
+    end,
+    receive
+        {'DOWN', MRef1, _, _, _} ->
+            ok
+    after 3_000 ->
+        ct:fail("handler was not cancelled")
+    end,
+
+    %% cast
+    {ok, Stream2} =
+        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
+                                    #{channel => ?CHANN_NAME,
+                                      timeout => 2000}
+                                   ),
+    MRef2 =
+        receive
+            {grpc_req_enter, HandlerPid2, _GRPCReq2, _Meta2} ->
+                monitor(process, HandlerPid2)
+        after 3_000 ->
+                ct:fail("didn't enter the handler")
+        end,
+    ok = grpc_client:close_async(Stream2),
+    receive
+        {grpc_exit_signal, Reason2} ->
+            ct:pal("handler receive exit signal: ~p", [Reason2]),
+            ok
+    after 3_000 ->
+        ct:fail("handler didn't receive exit")
+    end,
+    receive
+        {'DOWN', MRef2, _, _, _} ->
+            ok
+    after 3_000 ->
+        ct:fail("handler was not cancelled")
+    end,
 
     ok.

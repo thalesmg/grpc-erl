@@ -25,6 +25,8 @@
         , health_check/2]).
 
 -export([ open/3
+        , close/2
+        , close_async/1
         , send/2
         , send/3
         , send/4
@@ -75,6 +77,9 @@
           %% Gun connection state
           gun_state :: up | down
          }).
+
+%% calls/casts/infos/continues
+-record(close, {stream_ref}).
 
 -type request() :: map().
 
@@ -227,6 +232,18 @@ open(Def, Metadata, Options0) ->
             {error, no_workers}
     end.
 
+close(GStream, Options) ->
+    #{ client_pid := ClientPid
+     , stream_ref := StreamRef
+     } = GStream,
+    call(ClientPid, #close{stream_ref = StreamRef}, Options).
+
+close_async(GStream) ->
+    #{ client_pid := ClientPid
+     , stream_ref := StreamRef
+     } = GStream,
+    gen_server:cast(ClientPid, #close{stream_ref = StreamRef}).
+
 connect_timeout(Options) ->
     maps:get(
       connect_timeout,
@@ -345,10 +362,8 @@ handle_call(Req, From, State = #state{gun_pid = undefined}) ->
         NState ->
             handle_call(Req, From, NState)
     end;
-
 handle_call(health_check, _From, State = #state{gun_state = up}) ->
     {reply, ok, State};
-
 handle_call(health_check, _From, State = #state{gun_state = down}) ->
     case do_connect(State) of
         {error, Reason} ->
@@ -356,7 +371,6 @@ handle_call(health_check, _From, State = #state{gun_state = down}) ->
         NState ->
             {reply, ok, NState}
     end;
-
 handle_call({open, #{path := Path,
                      message_type := MessageType
                     }, Metadata, Options},
@@ -382,7 +396,6 @@ handle_call({open, #{path := Path,
               },
     NState = State#state{streams = Streams#{StreamRef => Stream}},
     {reply, {ok, StreamRef}, NState};
-
 handle_call(_Req = {send, StreamRef, Bytes, IsFin},
             _From,
             State = #state{gun_pid = GunPid, streams = Streams, encoding = Encoding,
@@ -405,7 +418,6 @@ handle_call(_Req = {send, StreamRef, Bytes, IsFin},
         _S ->
             {reply, {error, bad_stream}, State}
     end;
-
 handle_call(_Req = {read, StreamRef, Endts},
             From,
             State = #state{streams = Streams}) ->
@@ -419,10 +431,15 @@ handle_call(_Req = {read, StreamRef, Endts},
               Streams,
               State)
     end;
-
+handle_call(#close{stream_ref = StreamRef}, _From, State0) ->
+    State = handle_close_stream(StreamRef, State0),
+    {reply, ok, State};
 handle_call(_Request, _From, State) ->
     {reply, {error, unkown_request}, State}.
 
+handle_cast(#close{stream_ref = StreamRef}, State0) ->
+    State = handle_close_stream(StreamRef, State0),
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -435,16 +452,13 @@ handle_info({timeout, TRef, clean_stopped_stream},
                     (_, _) -> true
                  end, Streams),
     {noreply, ensure_clean_timer(State#state{streams = NStreams, tref = undefined})};
-
 handle_info({timeout, TRef, flush_streams_sendbuff},
             State0 = #state{flush_timer_ref = TRef}) ->
     State = State0#state{flush_timer_ref = undefined},
     Nowts = erlang:system_time(millisecond),
     {noreply, ensure_flush_timer(flush_streams(Nowts, State))};
-
 handle_info({gun_up, GunPid, http2}, State = #state{gun_pid = GunPid}) ->
     {noreply, State#state{gun_state = up}};
-
 handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
             State = #state{gun_pid = GunPid, streams = Streams}) ->
     Nowts = erlang:system_time(millisecond),
@@ -457,7 +471,6 @@ handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
     end, [], maps:with(KilledStreamRefs, Streams)),
     {noreply, State#state{streams = maps:without(KilledStreamRefs, Streams),
                           gun_state = down}};
-
 handle_info({'DOWN', MRef, process, GunPid, Reason},
             State = #state{mref = MRef, gun_pid = GunPid, streams = Streams}) ->
     Nowts = erlang:system_time(millisecond),
@@ -470,7 +483,6 @@ handle_info({'DOWN', MRef, process, GunPid, Reason},
     {noreply, State#state{gun_pid = undefined,
                           streams = #{},
                           gun_state = down}};
-
 handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
     Ls = [gun_response, gun_trailers, gun_data, gun_error],
     case lists:member(element(1, Info), Ls) of
@@ -700,6 +712,24 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
 reply_hangs(DroppedStream, Result) ->
     #{hangs := Hangs} = DroppedStream,
     lists:foreach(fun({From, _EndTs}) -> gen_server:reply(From, Result) end, Hangs).
+
+handle_close_stream(StreamRef, State0) ->
+    #state{streams = Streams0} = State0,
+    case maps:take(StreamRef, Streams0) of
+        error ->
+            State0;
+        {Stream, Streams} ->
+            State = State0#state{streams = Streams},
+            case State#state.gun_pid of
+                GunPid when is_pid(GunPid) ->
+                    _ = gun:cancel(GunPid, StreamRef),
+                    ok;
+                _ ->
+                    ok
+            end,
+            reply_hangs(Stream, stream_closed),
+            State
+    end.
 
 %%--------------------------------------------------------------------
 %% Internal funcs
