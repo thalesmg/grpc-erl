@@ -1,5 +1,5 @@
 %%--------------------------------------------------------------------
-%% Copyright (c) 2020 EMQ Technologies Co., Ltd. All Rights Reserved.
+%% Copyright (c) 2026 EMQ Technologies Co., Ltd. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 %% limitations under the License.
 %%--------------------------------------------------------------------
 
--module(test_svr).
+-module(test2_svr).
 
 -behavior(test_bhvr).
 
@@ -24,9 +24,17 @@
 %%--------------------------------------------------------------------
 %% Callbacks
 
-test_deadline(_Req = #{ms := Ms}, _Md) ->
-    timer:sleep(Ms),
-    {ok, #{message => <<>>}, _Md}.
+test_deadline(_Req, Meta) ->
+    {ok, #{message => <<>>}, Meta}.
 
-test_stream_out(_Req, _Meta) ->
-    {ok, #{message => <<>>}}.
+test_stream_out(Req, Meta) ->
+    #{<<"test_pid">> := TestPidBin} = Meta,
+    TestPid = list_to_pid(binary_to_list(TestPidBin)),
+    TestPid ! {grpc_req_enter, self(), Req, Meta},
+    process_flag(trap_exit, true),
+    receive
+        {'EXIT', _, Reason} ->
+            TestPid ! {grpc_exit_signal, Reason},
+            exit(Reason)
+    end,
+    {ok, Req}.

@@ -6,6 +6,7 @@ syntax = "proto3";
 service Test {
   // Sends a greeting
   rpc TestDeadline(DeadlineRequest) returns (TestReply) {}
+  rpc TestStreamOut(StreamOutRequest) returns (stream StreamOutResponse)
 }
 
 // The request message containing the user's name.
@@ -16,4 +17,12 @@ message DeadlineRequest {
 // The response message containing the greetings
 message TestReply {
   string message = 1;
+}
+
+message StreamOutRequest {
+  optional string message = 1;
+}
+
+message StreamOutResponse {
+  optional string message = 1;
 }
