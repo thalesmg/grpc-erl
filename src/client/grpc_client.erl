@@ -819,7 +819,7 @@ handle_close_stream(StreamRef, State0) ->
                 _ ->
                     ok
             end,
-            reply_hangs(Stream, stream_closed),
+            reply_hangs(Stream, {error, stream_closed}),
             State
     end.
 
