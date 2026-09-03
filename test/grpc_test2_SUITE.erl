@@ -51,7 +51,8 @@ end_per_suite(_Cfg) ->
     _ = application:stop(grpc).
 
 init_per_testcase(t_deadline, Cfg) ->
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, ?config(services, Cfg), []),
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, ?config(services, Cfg),
+                                [{ranch_opts, #{shutdown => brutal_kill}}]),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     Cfg;
 init_per_testcase(_TestCase, Cfg) ->
@@ -82,7 +83,8 @@ t_deadline(_) ->
 
 t_health_check(Cfg) ->
     Services = ?config(services, Cfg),
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, []),
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
+                                [{ranch_opts, #{shutdown => brutal_kill}}]),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
 
     WorkersHealthCheck =
@@ -107,7 +109,8 @@ t_health_check(Cfg) ->
 
 t_close_stream(_TCConfig) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, []),
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
+                                [{ranch_opts, #{shutdown => brutal_kill}}]),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
