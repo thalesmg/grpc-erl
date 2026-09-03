@@ -54,6 +54,9 @@
              , options/0
              , grpcstream/0]).
 
+-define(active_owner, active_owner).
+-define(undefined, undefined).
+
 -record(state, {
           %% Pool name
           pool,
@@ -81,6 +84,7 @@
          }).
 
 -record(recv_async_caller, {dest :: active_owner()}).
+-type recv_async_caller() :: #recv_async_caller{}.
 
 %% calls/casts/infos/continues
 -record(close, {stream_ref :: stream_ref()}).
@@ -169,6 +173,7 @@
                                   RemoteState :: stream_state()}
                    , mqueue   := [binary() | {eos, trailers()}]
                    , hangs    := [{caller(), ts()}]
+                   , ?active_owner := ?undefined | recv_async_caller()
                    , recvbuff := binary()
                    , sendbuff := iolist()
                    , sendbuff_size := non_neg_integer()
@@ -189,7 +194,7 @@
                        }.
 
 -type recv_async_opts() :: #{mode := recv_async_mode()}.
--type recv_async_mode() :: once.
+-type recv_async_mode() :: once | active.
 
 -dialyzer({nowarn_function, [have_buffered_bytes/1]}).
 
@@ -327,13 +332,19 @@ recv(#{def        := Def,
 
 -spec recv_async(grpcstream(), recv_async_opts()) -> reference().
 recv_async(GStream, Opts) when
-    map_get(mode, Opts) == once
+    map_get(mode, Opts) == once;
+    map_get(mode, Opts) == active
 ->
     #{mode := Mode} = Opts,
     #{ client_pid := ClientPid
      , stream_ref := StreamRef
      } = GStream,
-    ReplyAlias = monitor(process, ClientPid, [{alias, reply_demonitor}]),
+    UnaliasOpt =
+        case Mode of
+            once -> reply_demonitor;
+            active -> demonitor
+        end,
+    ReplyAlias = monitor(process, ClientPid, [{alias, UnaliasOpt}]),
     RecvAsync = #recv_async{dest = ReplyAlias, mode = Mode, stream_ref = StreamRef},
     ok = gen_server:cast(ClientPid, RecvAsync),
     ReplyAlias.
@@ -430,6 +441,7 @@ handle_call({open, #{path := Path,
     Stream = #{st       => {open, idle},
                mqueue   => [],
                hangs    => [],
+               ?active_owner => ?undefined,
                recvbuff => <<>>,
                sendbuff => [],
                sendbuff_size => 0,
@@ -557,6 +569,8 @@ unknown_stream_ref_log_level(_) ->
     warning.
 
 terminate(_Reason, #state{pool = Pool, id = Id}) ->
+    %% "hangs" and active owner will be notified by `exit:{noproc, _}` and `{'DOWN', _, _,
+    %% _, _}`, respectively.
     gproc_pool:disconnect_worker(Pool, {Pool, Id}).
 
 %% downgrade to Vsn
@@ -684,9 +698,11 @@ stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
             {ok, Stream#{recvbuff => Rest}};
         {Rest, Frames} ->
             case clean_hangs(Stream#{recvbuff => Rest}) of
-                NStream = #{hangs := [], mqueue := MQueue} ->
+                #{hangs := [], ?active_owner := ?undefined, mqueue := MQueue} = NStream ->
                     {ok, NStream#{mqueue => MQueue ++ Frames}};
-                NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
+                #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+                    {ok, [{reply, Caller, {ok, MQueue ++ Frames}}], NStream};
+                #{hangs := [{From, _}|NHangs], mqueue := MQueue} = NStream ->
                     {ok, [{reply, From, {ok, MQueue ++ Frames}}], NStream#{hangs => NHangs}}
             end
     end;
@@ -712,21 +728,31 @@ stream_handle(Info, Stream) ->
 
 handle_remote_closed(Trailers, Stream = #{st := {closed, _}}) ->
     case clean_hangs(Stream#{st => {closed, closed}}) of
-        NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
+        #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+            #{hangs := Hangs} = NStream,
+            Event1 = {reply, Caller, {ok, MQueue ++ [{eos, Trailers}]}},
+            Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, Hangs),
+            {shutdown, normal, [Event1 | Events2], NStream#{hangs => [], mqueue => []}};
+        #{hangs := [{From, _}|NHangs], mqueue := MQueue} = NStream ->
             Events1 = [{reply, From, {ok, MQueue ++ [{eos, Trailers}]}}],
             Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, NHangs),
             {shutdown, normal, Events1 ++ Events2, NStream#{hangs => [], mqueue => []}};
-        NStream = #{hangs := [], mqueue := MQueue} ->
+        #{hangs := [], mqueue := MQueue} = NStream ->
             {ok, NStream#{mqueue => MQueue ++ [{eos, Trailers}],
                           stopped => erlang:system_time(millisecond)}}
     end;
 handle_remote_closed(Trailers, Stream = #{st := {Ls, _}}) ->
     case clean_hangs(Stream#{st => {Ls, closed}}) of
-        NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
+        #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+            #{hangs := Hangs} = NStream,
+            Event1 = {reply, Caller, {ok, MQueue ++ [{eos, Trailers}]}},
+            Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, Hangs),
+            {shutdown, normal, [Event1 | Events2], NStream#{hangs => [], mqueue => []}};
+        #{hangs := [{From, _}|NHangs], mqueue := MQueue} = NStream ->
             Events1 = [{reply, From, {ok, MQueue ++ [{eos, Trailers}]}}],
             Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, NHangs),
             {ok, Events1 ++ Events2, NStream#{hangs => [], mqueue => []}};
-        NStream = #{hangs := [], mqueue := MQueue} ->
+        #{hangs := [], mqueue := MQueue} = NStream ->
             {ok, NStream#{mqueue => MQueue ++ [{eos, Trailers}]}}
     end.
 
@@ -739,8 +765,17 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
 
 %% if there are any calls waiting on us, we must reply them.
 reply_hangs(DroppedStream, Result) ->
+    reply_active_owner(DroppedStream, Result),
     #{hangs := Hangs} = DroppedStream,
     lists:foreach(fun({From, _EndTS}) -> reply_caller(From, Result) end, Hangs).
+
+reply_active_owner(DroppedStream, Result) ->
+    case DroppedStream of
+        #{?active_owner := #recv_async_caller{} = Caller} ->
+            reply_caller(Caller, Result);
+        #{} ->
+            ok
+    end.
 
 reply_gun_down_drop_streams(Reason, WhichStreams, State0) ->
     NowTS = erlang:system_time(millisecond),
@@ -754,7 +789,13 @@ reply_gun_down_drop_streams(Reason, WhichStreams, State0) ->
                  maps:without(KilledStreamRefs, Streams0)}
         end,
     maps:foreach(
-      fun(_, #{hangs := Hangs}) ->
+      fun(_, #{hangs := Hangs, ?active_owner := ActiveOwner}) ->
+        case ActiveOwner of
+            #recv_async_caller{} = Caller ->
+                reply_caller(Caller, {error, {connection_down, Reason}});
+            ?undefined ->
+                ok
+        end,
         lists:foreach(fun({From, EndTS}) ->
             EndTS > NowTS andalso
               reply_caller(From, {error, {connection_down, Reason}})
@@ -798,7 +839,37 @@ handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
               StreamRef,
               Streams,
               State0)
+    end;
+handle_recv_async(#recv_async{mode = active} = RecvAsync, State0) ->
+    #recv_async{dest = Dest, stream_ref = StreamRef} = RecvAsync,
+    #state{streams = Streams} = State0,
+    Caller = #recv_async_caller{dest = Dest},
+    case maps:find(StreamRef, Streams) of
+        error ->
+            reply_caller(Caller, {error, not_found}),
+            State0;
+        {ok, Stream0} ->
+            Stream = Stream0#{?active_owner := Caller},
+            %% immediately flush anything buffered
+            do_flush_recv_async(Stream, StreamRef, State0)
     end.
+
+do_flush_recv_async(Stream, StreamRef, State0) ->
+    #state{streams = Streams} = State0,
+    #{?active_owner := Caller} = Stream,
+    %% see `stream_handle/2`.
+    Res =
+        case Stream of
+            #{st := {closed, closed}, mqueue := MQueue} ->
+                {shutdown, normal, [{reply, Caller, {ok, MQueue}}], Stream#{mqueue => []}};
+            #{st := {_LS, closed}, mqueue := MQueue} when MQueue /= [] ->
+                {shutdown, normal, [{reply, Caller, {ok, MQueue}}], Stream#{mqueue => []}};
+            #{st := {_LS, open}, mqueue := MQueue} when MQueue /= [] ->
+                {ok, [{reply, Caller, {ok, MQueue}}], Stream#{mqueue => []}};
+            #{} ->
+                {ok, Stream}
+        end,
+    handle_stream_handle_result(Res, StreamRef, Streams, State0).
 
 %%--------------------------------------------------------------------
 %% Internal funcs
