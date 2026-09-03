@@ -425,16 +425,18 @@ handle_call(_Req = {send, StreamRef, Bytes, IsFin},
     end;
 handle_call(_Req = {read, StreamRef, EndTS},
             From,
-            State = #state{streams = Streams}) ->
+            State0 = #state{streams = Streams}) ->
     case maps:get(StreamRef, Streams, undefined) of
         undefined ->
-            {reply, {error, not_found}, State};
+            {reply, {error, not_found}, State0};
         Stream ->
-            handle_stream_handle_result(
-              stream_handle({read, From, StreamRef, EndTS}, Stream),
-              StreamRef,
-              Streams,
-              State)
+            State =
+                handle_stream_handle_result(
+                  stream_handle({read, From, StreamRef, EndTS}, Stream),
+                  StreamRef,
+                  Streams,
+                  State0),
+            {noreply, State}
     end;
 handle_call(#close{stream_ref = StreamRef}, _From, State0) ->
     State = handle_close_stream(StreamRef, State0),
@@ -488,7 +490,7 @@ handle_info({'DOWN', MRef, process, GunPid, Reason},
     {noreply, State#state{gun_pid = undefined,
                           streams = #{},
                           gun_state = down}};
-handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
+handle_info(Info, #state{streams = Streams} = State0) when is_tuple(Info) ->
     Ls = [gun_response, gun_trailers, gun_data, gun_error],
     case lists:member(element(1, Info), Ls) of
         true ->
@@ -500,25 +502,27 @@ handle_info(Info, State = #state{streams = Streams}) when is_tuple(Info) ->
                     ?LOG(debug, "[gRPC Client] Stream ~w goaway, "
                                 "error_code: ~0p, details: ~0p",
                                 [StreamID, ErrCode, Reason]),
-                    {noreply, State};
+                    {noreply, State0};
                 _ ->
                     case maps:get(StreamRef, Streams, undefined) of
                         undefined ->
                             LogLevel = unknown_stream_ref_log_level(Info),
                             ?LOG(LogLevel, "[gRPC Client] Unknown stream ref: ~0p, "
                                           "event: ~0p", [StreamRef, Info]),
-                            {noreply, State};
+                            {noreply, State0};
                         Stream ->
-                            handle_stream_handle_result(
-                              stream_handle(Info, Stream),
-                              StreamRef,
-                              Streams,
-                              State)
+                            State =
+                                handle_stream_handle_result(
+                                  stream_handle(Info, Stream),
+                                  StreamRef,
+                                  Streams,
+                                  State0),
+                            {noreply, State}
                     end
             end;
         _ ->
             ?LOG(warning, "[gRPC Client] Unexpected info: ~p~n", [Info]),
-            {noreply, State}
+            {noreply, State0}
     end.
 
 unknown_stream_ref_log_level({gun_error, _, _, {stream_error,no_error,'Stream reset by server.'}}) ->
@@ -579,12 +583,12 @@ code_change(_Vsn,
 %% Handle stream handle
 
 handle_stream_handle_result(ok, _StreamRef, Streams, State) ->
-    {noreply, State#state{streams = Streams}};
+    State#state{streams = Streams};
 handle_stream_handle_result({ok, Stream}, StreamRef, Streams, State) ->
-    {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
+    State#state{streams = Streams#{StreamRef => Stream}};
 handle_stream_handle_result({ok, Events, Stream}, StreamRef, Streams, State) ->
     _ = run_events(Events),
-    {noreply, State#state{streams = Streams#{StreamRef => Stream}}};
+    State#state{streams = Streams#{StreamRef => Stream}};
 % shutdown on gun error
 handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, State) ->
     LogLevel =
@@ -594,14 +598,14 @@ handle_stream_handle_result({shutdown, Reason, Stream}, StreamRef, Streams, Stat
         end,
     ?LOG(LogLevel, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s", [Reason, format_stream(Stream)]),
     reply_hangs(Stream, {error, Reason}),
-    {noreply, State#state{streams = maps:remove(StreamRef, Streams)}};
+    State#state{streams = maps:remove(StreamRef, Streams)};
 % self-induced shutdown
 handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Streams, State) ->
     ?IS_SILENCED_STREAM_ERROR(Reason) orelse
         ?LOG(error, "[gRPC Client] Stream shutdown reason: ~p, stream: ~s",
              [Reason, format_stream(_Stream)]),
     _ = run_events(Events),
-    {noreply, State#state{streams = maps:remove(StreamRef, Streams)}}.
+    State#state{streams = maps:remove(StreamRef, Streams)}.
 
 run_events([]) ->
     ok;
