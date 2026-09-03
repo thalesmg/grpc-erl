@@ -69,7 +69,7 @@
           %% XXX: Bad impl.
           encoding :: grpc_frame:encoding(),
           %% Streams
-          streams :: #{gun:stream_ref() => stream()},
+          streams :: #{stream_ref() => stream()},
           %% Client options
           client_opts :: client_options(),
           %% Flush timer reference
@@ -79,8 +79,9 @@
          }).
 
 %% calls/casts/infos/continues
--record(close, {stream_ref}).
+-record(close, {stream_ref :: stream_ref()}).
 
+-type stream_ref() :: gun:stream_ref().
 -type request() :: map().
 
 -type response() :: map().
@@ -157,14 +158,18 @@
 
 -type stream() :: #{ st       := {LocalState :: stream_state(),
                                   RemoteState :: stream_state()}
-                   , mqueue   := list()
-                   , hangs    := list()
+                   , mqueue   := [binary() | {eos, trailers()}]
+                   , hangs    := [{caller(), ts()}]
                    , recvbuff := binary()
                    , sendbuff := iolist()
                    , sendbuff_size := non_neg_integer()
                    , sendbuff_last_flush_ts := non_neg_integer()
                    , encoding := grpc_frame:encoding()
                    }.
+-type ts() :: integer().
+%% gun:resp_headers() (not exported)
+-type trailers() :: [{binary(), binary()}].
+-type caller() :: gen_server:from().
 
 -type client_pid() :: pid().
 
@@ -609,25 +614,19 @@ run_events([{reply, From, Msg}|Es]) ->
 %%--------------------------------------------------------------------
 
 %% api calls
-
 stream_handle({read, From, _StreamRef, EndTs},
              Stream = #{mqueue := [], hangs := Hangs}) ->
     {ok, Stream#{hangs => [{From, EndTs}|Hangs]}};
-
 stream_handle({read, From, _StreamRef, _EndTs},
               Stream = #{st := {_LS, open}, mqueue := MQueue}) when MQueue /= [] ->
     {ok, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
-
 stream_handle({read, From, _StreamRef, _EndTs},
     Stream = #{st := {_LS, closed}, mqueue := MQueue}) when MQueue /= [] ->
     {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
-
 stream_handle({read, From, _StreamRef, _EndTs},
               Stream = #{st := {closed, closed}, mqueue := MQueue}) ->
     {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
-
 %% gun msgs
-
 stream_handle({gun_response, _GunPid, _StreamRef, IsFin, _Status, Headers},
               Stream = #{st := {_LS, idle}}) ->
     case IsFin of
@@ -636,11 +635,9 @@ stream_handle({gun_response, _GunPid, _StreamRef, IsFin, _Status, Headers},
         fin ->
             handle_remote_closed(Headers, Stream)
     end;
-
 stream_handle({gun_trailers, _GunPid, _StreamRef, Trailers},
               Stream = #{st := {_LS, open}}) ->
     handle_remote_closed(Trailers, Stream);
-
 stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
               Stream = #{st := {_LS, open},
                          recvbuff := Acc,
@@ -657,7 +654,6 @@ stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
                     {ok, [{reply, From, {ok, MQueue ++ Frames}}], NStream#{hangs => NHangs}}
             end
     end;
-
 stream_handle({gun_data, _GunPid, _StreamRef, fin, Data},
                Stream = #{st := {_LS, open},
                          recvbuff := Acc,
@@ -670,13 +666,11 @@ stream_handle({gun_data, _GunPid, _StreamRef, fin, Data},
             MQueue = maps:get(mqueue, Stream),
             handle_remote_closed([], Stream#{recvbuff => <<>>, mqueue => MQueue ++ Frames})
     end;
-
 stream_handle({gun_error, _GunPid, _StreamRef, {stream_error, no_error, 'Stream reset by server.'}},
               Stream = #{st := {_LS, closed}, mqueue := MQueue}) when MQueue =/= [] ->
     {ok, Stream};
 stream_handle({gun_error, _GunPid, _StreamRef, Reason}, Stream) ->
     {shutdown, Reason, Stream};
-
 stream_handle(Info, Stream) ->
     ?LOG(error, "Unexecpted stream event: ~p, stream ~0p", [Info, Stream]).
 
@@ -690,7 +684,6 @@ handle_remote_closed(Trailers, Stream = #{st := {closed, _}}) ->
             {ok, NStream#{mqueue => MQueue ++ [{eos, Trailers}],
                           stopped => erlang:system_time(millisecond)}}
     end;
-
 handle_remote_closed(Trailers, Stream = #{st := {Ls, _}}) ->
     case clean_hangs(Stream#{st => {Ls, closed}}) of
         NStream = #{hangs := [{From, _}|NHangs], mqueue := MQueue} ->
