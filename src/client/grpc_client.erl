@@ -471,7 +471,7 @@ handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
     _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
         lists:foreach(fun({From, Endts}) ->
             Endts > Nowts andalso
-              gen_server:reply(From, {error, {connection_down, Reason}})
+              reply_caller(From, {error, {connection_down, Reason}})
         end, Hangs)
     end, [], maps:with(KilledStreamRefs, Streams)),
     {noreply, State#state{streams = maps:without(KilledStreamRefs, Streams),
@@ -482,7 +482,7 @@ handle_info({'DOWN', MRef, process, GunPid, Reason},
     _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
         lists:foreach(fun({From, Endts}) ->
             Endts > Nowts andalso
-              gen_server:reply(From, {error, {connection_down, Reason}})
+              reply_caller(From, {error, {connection_down, Reason}})
         end, Hangs)
     end, [], Streams),
     {noreply, State#state{gun_pid = undefined,
@@ -606,8 +606,12 @@ handle_stream_handle_result({shutdown, Reason, Events, _Stream}, StreamRef, Stre
 run_events([]) ->
     ok;
 run_events([{reply, From, Msg}|Es]) ->
-    gen_server:reply(From, Msg),
+    reply_caller(From, Msg),
     run_events(Es).
+
+reply_caller({_, _} = From, Msg) ->
+    %% gen_server:from()
+    gen_server:reply(From, Msg).
 
 %%--------------------------------------------------------------------
 %% Streams handle
@@ -704,7 +708,7 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
 %% if there are any calls waiting on us, we must reply them.
 reply_hangs(DroppedStream, Result) ->
     #{hangs := Hangs} = DroppedStream,
-    lists:foreach(fun({From, _EndTs}) -> gen_server:reply(From, Result) end, Hangs).
+    lists:foreach(fun({From, _EndTs}) -> reply_caller(From, Result) end, Hangs).
 
 handle_close_stream(StreamRef, State0) ->
     #state{streams = Streams0} = State0,
