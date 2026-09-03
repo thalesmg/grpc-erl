@@ -32,6 +32,8 @@
         , send/4
         , recv/1
         , recv/2
+        , recv_async/2
+        , map_recv_async_reply/2
         ]).
 
 -export([trailers_to_error/1]).
@@ -78,8 +80,15 @@
           gun_state :: up | down
          }).
 
+-record(recv_async_caller, {dest :: active_owner()}).
+
 %% calls/casts/infos/continues
 -record(close, {stream_ref :: stream_ref()}).
+-record(recv_async, {
+    stream_ref :: stream_ref(),
+    mode :: recv_async_mode(),
+    dest :: active_owner()
+}).
 
 -type stream_ref() :: gun:stream_ref().
 -type request() :: map().
@@ -170,6 +179,7 @@
 %% gun:resp_headers() (not exported)
 -type trailers() :: [{binary(), binary()}].
 -type caller() :: gen_server:from().
+-type active_owner() :: erlang:send_destination().
 
 -type client_pid() :: pid().
 
@@ -177,6 +187,9 @@
                        , stream_ref := reference()
                        , def := def()
                        }.
+
+-type recv_async_opts() :: #{mode := recv_async_mode()}.
+-type recv_async_mode() :: once.
 
 -dialyzer({nowarn_function, [have_buffered_bytes/1]}).
 
@@ -305,12 +318,36 @@ recv(#{def        := Def,
             end,
     case call(ClientPid, {read, StreamRef, EndTS}, Options) of
         {error, _} = E -> E;
-        {IsMore, Frames} ->
+        {ok, Frames} ->
             Msgs = lists:map(fun({eos, Trailers}) -> {eos, Trailers};
                          (Bin) -> Unmarshal(Bin)
                    end, Frames),
-            {IsMore, Msgs}
+            {ok, Msgs}
     end.
+
+-spec recv_async(grpcstream(), recv_async_opts()) -> reference().
+recv_async(GStream, Opts) when
+    map_get(mode, Opts) == once
+->
+    #{mode := Mode} = Opts,
+    #{ client_pid := ClientPid
+     , stream_ref := StreamRef
+     } = GStream,
+    ReplyAlias = monitor(process, ClientPid, [{alias, reply_demonitor}]),
+    RecvAsync = #recv_async{dest = ReplyAlias, mode = Mode, stream_ref = StreamRef},
+    ok = gen_server:cast(ClientPid, RecvAsync),
+    ReplyAlias.
+
+map_recv_async_reply(GStream, Frames) when is_list(Frames) ->
+    #{def := Def} = GStream,
+    Unmarshal = maps:get(unmarshal, Def),
+    lists:map(
+      fun({eos, Trailers}) ->
+              {eos, Trailers};
+         (Bin) ->
+              Unmarshal(Bin)
+      end,
+      Frames).
 
 -spec health_check(pid(), options()) -> ok | {error, term()}.
 health_check(Worker, Options) ->
@@ -446,6 +483,9 @@ handle_call(_Request, _From, State) ->
 
 handle_cast(#close{stream_ref = StreamRef}, State0) ->
     State = handle_close_stream(StreamRef, State0),
+    {noreply, State};
+handle_cast(#recv_async{} = RecvAsync, State0) ->
+    State = handle_recv_async(RecvAsync, State0),
     {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
@@ -597,9 +637,13 @@ run_events([{reply, From, Msg}|Es]) ->
     reply_caller(From, Msg),
     run_events(Es).
 
+reply_caller(#recv_async_caller{dest = Dest}, Msg) ->
+    _ = Dest ! {grpc_reply, Dest, Msg},
+    ok;
 reply_caller({_, _} = From, Msg) ->
     %% gen_server:from()
-    gen_server:reply(From, Msg).
+    _ = gen_server:reply(From, Msg),
+    ok.
 
 %%--------------------------------------------------------------------
 %% Streams handle
@@ -736,6 +780,24 @@ handle_close_stream(StreamRef, State0) ->
             end,
             reply_hangs(Stream, stream_closed),
             State
+    end.
+
+handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
+    %% can emulate by using the existing read call with infinity timeout.
+    #recv_async{dest = Dest, stream_ref = StreamRef} = RecvAsync,
+    #state{streams = Streams} = State0,
+    Caller = #recv_async_caller{dest = Dest},
+    case maps:find(StreamRef, Streams) of
+        error ->
+            reply_caller(Caller, {error, not_found}),
+            State0;
+        {ok, Stream0} ->
+            EndTS = infinity,
+            handle_stream_handle_result(
+              stream_handle({read, Caller, StreamRef, EndTS}, Stream0),
+              StreamRef,
+              Streams,
+              State0)
     end.
 
 %%--------------------------------------------------------------------

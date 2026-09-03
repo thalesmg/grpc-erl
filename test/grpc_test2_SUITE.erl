@@ -21,11 +21,14 @@
 
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
+-include("grpc.hrl").
+-include("test_helpers.hrl").
 
 -define(SERVER_NAME, server).
 -define(SERVER_ADDR, "http://127.0.0.1:10000").
 -define(CHANN_NAME, channel).
 
+-undef(LOG).
 -define(LOG(Fmt, Args), io:format(standard_error, Fmt, Args)).
 
 %%--------------------------------------------------------------------
@@ -33,7 +36,11 @@
 %%--------------------------------------------------------------------
 
 all() ->
-    [t_deadline, t_health_check].
+    lists:usort([
+        F
+     || {F, 1} <- ?MODULE:module_info(exports),
+        string:substr(atom_to_list(F), 1, 2) == "t_"
+    ]).
 
 init_per_suite(Cfg) ->
     _ = application:ensure_all_started(grpc),
@@ -159,5 +166,112 @@ t_close_stream(_TCConfig) ->
     after 3_000 ->
         ct:fail("handler was not cancelled")
     end,
+
+    ok.
+
+t_recv_async_once(_TCConfig) ->
+    Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
+                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
+    TestPidBin = iolist_to_binary(pid_to_list(self())),
+
+    {ok, Stream1} =
+        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
+                                    #{channel => ?CHANN_NAME,
+                                      timeout => 2000}
+                                   ),
+    {grpc_req_enter, HandlerPid1, GRPCReq1, _Meta1} =
+        ?assertReceive({grpc_req_enter, _, _, _}),
+
+    Handle1 = grpc_client:recv_async(Stream1, #{mode => once}),
+
+    %% even though we set mode to once, we may receive a batch of replies (including
+    %% trailers if the server happens to close the connection).
+    grpc_stream:reply(GRPCReq1, [
+        #{message => <<"1">>},
+        #{message => <<"2">>},
+        #{message => <<"3">>}
+    ]),
+
+    {grpc_reply, _, {ok, Reply1Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
+    ?assertMatch(
+       [ #{message := <<"1">>}
+       , #{message := <<"2">>}
+       , #{message := <<"3">>}
+       ],
+       grpc_client:map_recv_async_reply(Stream1, Reply1Raw)
+      ),
+
+    %% further replies shouldn't be received unless asked for.
+    grpc_stream:reply(GRPCReq1, [
+        #{message => <<"4">>},
+        #{message => <<"5">>},
+        #{message => <<"6">>}
+    ]),
+    ?assertNotReceive({grpc_reply, _, _}),
+
+    Handle2 = grpc_client:recv_async(Stream1, #{mode => once}),
+    {grpc_reply, _, {ok, Reply2Raw}} = ?assertReceive({grpc_reply, Handle2, _}),
+    ?assertMatch(
+       [ #{message := <<"4">>}
+       , #{message := <<"5">>}
+       , #{message := <<"6">>}
+       ],
+       grpc_client:map_recv_async_reply(Stream1, Reply2Raw)
+      ),
+
+    grpc_stream:reply(GRPCReq1, [
+        #{message => <<"7">>},
+        #{message => <<"8">>},
+        #{message => <<"9">>}
+    ]),
+    ?assertNotReceive({grpc_reply, _, _}),
+
+    HandlerPid1 ! continue,
+
+    Handle3 = grpc_client:recv_async(Stream1, #{mode => once}),
+    {grpc_reply, _, {ok, Reply3Raw}} = ?assertReceive({grpc_reply, Handle3, _}),
+    %% race: might receive trailers bundled with batch, or later.
+    case grpc_client:map_recv_async_reply(Stream1, Reply3Raw) of
+        [ #{message := <<"7">>}
+        , #{message := <<"8">>}
+        , #{message := <<"9">>}
+        ] ->
+            ct:pal("waiting for trailers"),
+            Handle4 = grpc_client:recv_async(Stream1, #{mode => once}),
+            {grpc_reply, _, {ok, Reply4Raw}} = ?assertReceive({grpc_reply, Handle4, _}),
+            ?assertMatch(
+               [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
+               grpc_client:map_recv_async_reply(Stream1, Reply4Raw)
+              ),
+            ok;
+        [ #{message := <<"7">>}
+        , #{message := <<"8">>}
+        , #{message := <<"9">>}
+        , {eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}
+        ] ->
+            ct:pal("got trailers"),
+            ok;
+        Unexpected1 ->
+            error({unexpected_reply, Unexpected1})
+    end,
+    ?assertNotReceive({grpc_reply, Handle2, _}),
+
+    %% should be notified if client dies.
+    {ok, Stream2} =
+        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
+                                    #{channel => ?CHANN_NAME,
+                                      timeout => 2000}
+                                   ),
+    {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
+        ?assertReceive({grpc_req_enter, _, _, _}),
+
+    ReplyAlias2 = grpc_client:recv_async(Stream2, #{mode => once}),
+
+    #{client_pid := ClientPid2} = Stream2,
+    exit(ClientPid2, kill),
+
+    ?assertReceive({'DOWN', ReplyAlias2, process, ClientPid2, _}),
 
     ok.
