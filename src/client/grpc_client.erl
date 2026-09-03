@@ -467,29 +467,13 @@ handle_info({timeout, TRef, flush_streams_sendbuff},
 handle_info({gun_up, GunPid, http2}, State = #state{gun_pid = GunPid}) ->
     {noreply, State#state{gun_state = up}};
 handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
-            State = #state{gun_pid = GunPid, streams = Streams}) ->
-    NowTS = erlang:system_time(millisecond),
-    %% Reply killed streams error
-    _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
-        lists:foreach(fun({From, EndTS}) ->
-            EndTS > NowTS andalso
-              reply_caller(From, {error, {connection_down, Reason}})
-        end, Hangs)
-    end, [], maps:with(KilledStreamRefs, Streams)),
-    {noreply, State#state{streams = maps:without(KilledStreamRefs, Streams),
-                          gun_state = down}};
+            State0 = #state{gun_pid = GunPid}) ->
+    State = reply_gun_down_drop_streams(Reason, KilledStreamRefs, State0),
+    {noreply, State#state{gun_state = down}};
 handle_info({'DOWN', MRef, process, GunPid, Reason},
-            State = #state{mref = MRef, gun_pid = GunPid, streams = Streams}) ->
-    NowTS = erlang:system_time(millisecond),
-    _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
-        lists:foreach(fun({From, EndTS}) ->
-            EndTS > NowTS andalso
-              reply_caller(From, {error, {connection_down, Reason}})
-        end, Hangs)
-    end, [], Streams),
-    {noreply, State#state{gun_pid = undefined,
-                          streams = #{},
-                          gun_state = down}};
+            State0 = #state{mref = MRef, gun_pid = GunPid}) ->
+    State = reply_gun_down_drop_streams(Reason, all, State0),
+    {noreply, State#state{gun_pid = undefined, gun_state = down}};
 handle_info(Info, #state{streams = Streams} = State0) when is_tuple(Info) ->
     Ls = [gun_response, gun_trailers, gun_data, gun_error],
     case lists:member(element(1, Info), Ls) of
@@ -713,6 +697,28 @@ clean_hangs(Stream = #{hangs := Hangs}) ->
 reply_hangs(DroppedStream, Result) ->
     #{hangs := Hangs} = DroppedStream,
     lists:foreach(fun({From, _EndTS}) -> reply_caller(From, Result) end, Hangs).
+
+reply_gun_down_drop_streams(Reason, WhichStreams, State0) ->
+    NowTS = erlang:system_time(millisecond),
+    #state{streams = Streams0} = State0,
+    {KilledStreams, Streams} =
+        case WhichStreams of
+            all ->
+                {Streams0, #{}};
+            KilledStreamRefs ->
+                {maps:with(KilledStreamRefs, Streams0),
+                 maps:without(KilledStreamRefs, Streams0)}
+        end,
+    maps:foreach(
+      fun(_, #{hangs := Hangs}) ->
+        lists:foreach(fun({From, EndTS}) ->
+            EndTS > NowTS andalso
+              reply_caller(From, {error, {connection_down, Reason}})
+        end, Hangs)
+      end,
+      KilledStreams
+     ),
+    State0#state{streams = Streams}.
 
 handle_close_stream(StreamRef, State0) ->
     #state{streams = Streams0} = State0,
