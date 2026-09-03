@@ -299,11 +299,11 @@ recv(#{def        := Def,
        stream_ref := StreamRef}, Options) ->
     Timeout = timeout(Options),
     Unmarshal = maps:get(unmarshal, Def),
-    Endts = case Timeout of
+    EndTS = case Timeout of
                 infinity -> infinity;
                 _ -> erlang:system_time(millisecond) + Timeout
             end,
-    case call(ClientPid, {read, StreamRef, Endts}, Options) of
+    case call(ClientPid, {read, StreamRef, EndTS}, Options) of
         {error, _} = E -> E;
         {IsMore, Frames} ->
             Msgs = lists:map(fun({eos, Trailers}) -> {eos, Trailers};
@@ -423,7 +423,7 @@ handle_call(_Req = {send, StreamRef, Bytes, IsFin},
         _S ->
             {reply, {error, bad_stream}, State}
     end;
-handle_call(_Req = {read, StreamRef, Endts},
+handle_call(_Req = {read, StreamRef, EndTS},
             From,
             State = #state{streams = Streams}) ->
     case maps:get(StreamRef, Streams, undefined) of
@@ -431,7 +431,7 @@ handle_call(_Req = {read, StreamRef, Endts},
             {reply, {error, not_found}, State};
         Stream ->
             handle_stream_handle_result(
-              stream_handle({read, From, StreamRef, Endts}, Stream),
+              stream_handle({read, From, StreamRef, EndTS}, Stream),
               StreamRef,
               Streams,
               State)
@@ -450,27 +450,27 @@ handle_cast(_Msg, State) ->
 
 handle_info({timeout, TRef, clean_stopped_stream},
             State = #state{tref = TRef, streams = Streams}) ->
-    Nowts = erlang:system_time(millisecond),
+    NowTS = erlang:system_time(millisecond),
     NStreams = maps:filter(
                  fun(_, #{stopped := Stoppedts}) ->
-                       Nowts < Stoppedts + ?STREAM_RESERVED_TIMEOUT;
+                       NowTS < Stoppedts + ?STREAM_RESERVED_TIMEOUT;
                     (_, _) -> true
                  end, Streams),
     {noreply, ensure_clean_timer(State#state{streams = NStreams, tref = undefined})};
 handle_info({timeout, TRef, flush_streams_sendbuff},
             State0 = #state{flush_timer_ref = TRef}) ->
     State = State0#state{flush_timer_ref = undefined},
-    Nowts = erlang:system_time(millisecond),
-    {noreply, ensure_flush_timer(flush_streams(Nowts, State))};
+    NowTS = erlang:system_time(millisecond),
+    {noreply, ensure_flush_timer(flush_streams(NowTS, State))};
 handle_info({gun_up, GunPid, http2}, State = #state{gun_pid = GunPid}) ->
     {noreply, State#state{gun_state = up}};
 handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
             State = #state{gun_pid = GunPid, streams = Streams}) ->
-    Nowts = erlang:system_time(millisecond),
+    NowTS = erlang:system_time(millisecond),
     %% Reply killed streams error
     _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
-        lists:foreach(fun({From, Endts}) ->
-            Endts > Nowts andalso
+        lists:foreach(fun({From, EndTS}) ->
+            EndTS > NowTS andalso
               reply_caller(From, {error, {connection_down, Reason}})
         end, Hangs)
     end, [], maps:with(KilledStreamRefs, Streams)),
@@ -478,10 +478,10 @@ handle_info({gun_down, GunPid, http2, Reason, KilledStreamRefs},
                           gun_state = down}};
 handle_info({'DOWN', MRef, process, GunPid, Reason},
             State = #state{mref = MRef, gun_pid = GunPid, streams = Streams}) ->
-    Nowts = erlang:system_time(millisecond),
+    NowTS = erlang:system_time(millisecond),
     _ = maps:fold(fun(_, #{hangs := Hangs}, _Acc) ->
-        lists:foreach(fun({From, Endts}) ->
-            Endts > Nowts andalso
+        lists:foreach(fun({From, EndTS}) ->
+            EndTS > NowTS andalso
               reply_caller(From, {error, {connection_down, Reason}})
         end, Hangs)
     end, [], Streams),
@@ -618,16 +618,16 @@ reply_caller({_, _} = From, Msg) ->
 %%--------------------------------------------------------------------
 
 %% api calls
-stream_handle({read, From, _StreamRef, EndTs},
+stream_handle({read, From, _StreamRef, EndTS},
              Stream = #{mqueue := [], hangs := Hangs}) ->
-    {ok, Stream#{hangs => [{From, EndTs}|Hangs]}};
-stream_handle({read, From, _StreamRef, _EndTs},
+    {ok, Stream#{hangs => [{From, EndTS}|Hangs]}};
+stream_handle({read, From, _StreamRef, _EndTS},
               Stream = #{st := {_LS, open}, mqueue := MQueue}) when MQueue /= [] ->
     {ok, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
-stream_handle({read, From, _StreamRef, _EndTs},
+stream_handle({read, From, _StreamRef, _EndTS},
     Stream = #{st := {_LS, closed}, mqueue := MQueue}) when MQueue /= [] ->
     {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
-stream_handle({read, From, _StreamRef, _EndTs},
+stream_handle({read, From, _StreamRef, _EndTS},
               Stream = #{st := {closed, closed}, mqueue := MQueue}) ->
     {shutdown, normal, [{reply, From, {ok, MQueue}}], Stream#{mqueue => []}};
 %% gun msgs
@@ -701,14 +701,14 @@ handle_remote_closed(Trailers, Stream = #{st := {Ls, _}}) ->
 clean_hangs(Stream = #{hangs := []}) ->
     Stream;
 clean_hangs(Stream = #{hangs := Hangs}) ->
-    Nowts = erlang:system_time(millisecond),
-    Hangs1 = lists:filter(fun({_, T}) -> T >= Nowts end, Hangs),
+    NowTS = erlang:system_time(millisecond),
+    Hangs1 = lists:filter(fun({_, T}) -> T >= NowTS end, Hangs),
     Stream#{hangs => Hangs1}.
 
 %% if there are any calls waiting on us, we must reply them.
 reply_hangs(DroppedStream, Result) ->
     #{hangs := Hangs} = DroppedStream,
-    lists:foreach(fun({From, _EndTs}) -> reply_caller(From, Result) end, Hangs).
+    lists:foreach(fun({From, _EndTS}) -> reply_caller(From, Result) end, Hangs).
 
 handle_close_stream(StreamRef, State0) ->
     #state{streams = Streams0} = State0,
@@ -777,7 +777,7 @@ ensure_gun_stopped(#state{} = State0) ->
 %%--------------------------------------------------------------------
 %% Helpers
 
-flush_streams(Nowts, State = #state{streams = Streams,
+flush_streams(NowTS, State = #state{streams = Streams,
                                     gun_pid = GunPid,
                                     client_opts = ClientOpts}) ->
     Intv = maps:get(stream_batch_delay_ms, ClientOpts, ?DEFAULT_STREAMING_DELAY),
@@ -785,14 +785,14 @@ flush_streams(Nowts, State = #state{streams = Streams,
         maps:map(
           fun(_, Stream = #{sendbuff_size := 0}) ->
                   Stream;
-             (_, Stream = #{sendbuff_last_flush_ts := Ts})
-               when Nowts < (Ts + Intv) ->
+             (_, Stream = #{sendbuff_last_flush_ts := TS})
+               when NowTS < (TS + Intv) ->
                   Stream;
              (StreamRef, Stream = #{sendbuff := IolistData,
-                                    sendbuff_last_flush_ts := Ts})
-               when Nowts >= (Ts + Intv) ->
+                                    sendbuff_last_flush_ts := TS})
+               when NowTS >= (TS + Intv) ->
                   ok = gun:data(GunPid, StreamRef, nofin, lists:reverse(IolistData)),
-                  Stream#{sendbuff := [], sendbuff_size := 0, sendbuff_last_flush_ts := Nowts}
+                  Stream#{sendbuff := [], sendbuff_size := 0, sendbuff_last_flush_ts := NowTS}
           end, Streams),
    State#state{streams = NStreams}.
 
