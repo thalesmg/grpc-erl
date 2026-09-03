@@ -174,6 +174,50 @@ t_close_stream(_TCConfig) ->
     ok.
 
 t_recv_async_once(_TCConfig) ->
+    do_t_recv_async_once(_Opts = #{}).
+
+t_recv_async_once_reply_fn(_TCConfig) ->
+    Tab = ets:new(spy, [public, ordered_set]),
+    MkOptsFn = fun(Stream) ->
+        Fn = fun(Reply0, ReplyAlias, Stream0, Tab0) ->
+            Reply = case Reply0 of
+                {ok, Frames} ->
+                    grpc_client:map_recv_async_reply(Stream0, Frames);
+                Error ->
+                    Error
+            end,
+            ets:insert(Tab0, {{erlang:monotonic_time(), ReplyAlias}, Reply}),
+            ReplyAlias ! {grpc_reply, ReplyAlias, Reply0},
+            ok
+        end,
+        ReplyFn = {Fn, [Stream, Tab]},
+        #{mode => once, reply_fn => ReplyFn}
+    end,
+    Opts = #{mk_opts_fn => MkOptsFn},
+    do_t_recv_async_once(Opts),
+    ?assertMatch(
+       [ [ #{message := <<"1">>}
+         , #{message := <<"2">>}
+         , #{message := <<"3">>}
+         ]
+       , [ #{message := <<"4">>}
+         , #{message := <<"5">>}
+         , #{message := <<"6">>}
+         ]
+       , [ #{message := <<"7">>}
+         , #{message := <<"8">>}
+         , #{message := <<"9">>}
+         ]
+       , [{eos, _}]
+       , {error, not_found}
+       %% obviously, we don't get the down signal registered if we kill the process
+       ],
+       [V || {_K, V} <- ets:tab2list(Tab)]
+      ),
+    ok.
+
+do_t_recv_async_once(Opts) ->
+    MkOptsFn = maps:get(mk_opts_fn, Opts, fun(_Stream) -> #{mode => once} end),
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
     {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
                                 [{ranch_opts, #{shutdown => brutal_kill}}]),
@@ -188,7 +232,8 @@ t_recv_async_once(_TCConfig) ->
     {grpc_req_enter, HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
-    Handle1 = grpc_client:recv_async(Stream1, #{mode => once}),
+    Opts1 = MkOptsFn(Stream1),
+    Handle1 = grpc_client:recv_async(Stream1, Opts1),
 
     %% even though we set mode to once, we may receive a batch of replies (including
     %% trailers if the server happens to close the connection).
@@ -215,7 +260,7 @@ t_recv_async_once(_TCConfig) ->
     ]),
     ?assertNotReceive({grpc_reply, _, _}),
 
-    Handle2 = grpc_client:recv_async(Stream1, #{mode => once}),
+    Handle2 = grpc_client:recv_async(Stream1, Opts1),
     {grpc_reply, _, {ok, Reply2Raw}} = ?assertReceive({grpc_reply, Handle2, _}),
     ?assertMatch(
        [ #{message := <<"4">>}
@@ -234,7 +279,7 @@ t_recv_async_once(_TCConfig) ->
 
     HandlerPid1 ! continue,
 
-    Handle3 = grpc_client:recv_async(Stream1, #{mode => once}),
+    Handle3 = grpc_client:recv_async(Stream1, Opts1),
     {grpc_reply, _, {ok, Reply3Raw}} = ?assertReceive({grpc_reply, Handle3, _}),
     %% race: might receive trailers bundled with batch, or later.
     case grpc_client:map_recv_async_reply(Stream1, Reply3Raw) of
@@ -243,7 +288,7 @@ t_recv_async_once(_TCConfig) ->
         , #{message := <<"9">>}
         ] ->
             ct:pal("waiting for trailers"),
-            Handle4 = grpc_client:recv_async(Stream1, #{mode => once}),
+            Handle4 = grpc_client:recv_async(Stream1, Opts1),
             {grpc_reply, _, {ok, Reply4Raw}} = ?assertReceive({grpc_reply, Handle4, _}),
             ?assertMatch(
                [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
@@ -263,7 +308,7 @@ t_recv_async_once(_TCConfig) ->
     ?assertNotReceive({grpc_reply, Handle2, _}),
 
     %% stream is already gone.
-    Handle5 = grpc_client:recv_async(Stream1, #{mode => once}),
+    Handle5 = grpc_client:recv_async(Stream1, Opts1),
     ?assertReceive({grpc_reply, Handle5, {error, not_found}}),
 
     %% should be notified if client dies.
@@ -275,7 +320,8 @@ t_recv_async_once(_TCConfig) ->
     {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
-    ReplyAlias2 = grpc_client:recv_async(Stream2, #{mode => once}),
+    Opts2 = MkOptsFn(Stream2),
+    ReplyAlias2 = grpc_client:recv_async(Stream2, Opts2),
 
     #{client_pid := ClientPid2} = Stream2,
     exit(ClientPid2, kill),
@@ -285,6 +331,50 @@ t_recv_async_once(_TCConfig) ->
     ok.
 
 t_recv_async_active(_TCConfig) ->
+    do_t_recv_async_active(_Opts = #{}).
+
+t_recv_async_active_reply_fn(_TCConfig) ->
+    Tab = ets:new(spy, [public, ordered_set]),
+    MkOptsFn = fun(Stream) ->
+        Fn = fun(Reply0, ReplyAlias, Stream0, Tab0) ->
+            Reply = case Reply0 of
+                {ok, Frames} ->
+                    grpc_client:map_recv_async_reply(Stream0, Frames);
+                Error ->
+                    Error
+            end,
+            ets:insert(Tab0, {{erlang:monotonic_time(), ReplyAlias}, Reply}),
+            ReplyAlias ! {grpc_reply, ReplyAlias, Reply0},
+            ok
+        end,
+        ReplyFn = {Fn, [Stream, Tab]},
+        #{mode => active, reply_fn => ReplyFn}
+    end,
+    Opts = #{mk_opts_fn => MkOptsFn},
+    do_t_recv_async_active(Opts),
+    ?assertMatch(
+       [ [ #{message := <<"1">>}
+         , #{message := <<"2">>}
+         , #{message := <<"3">>}
+         ]
+       , [ #{message := <<"4">>}
+         , #{message := <<"5">>}
+         , #{message := <<"6">>}
+         ]
+       , [ #{message := <<"7">>}
+         , #{message := <<"8">>}
+         , #{message := <<"9">>}
+         ]
+       , [{eos, _}]
+       , {error, not_found}
+       %% obviously, we don't get the down signal registered if we kill the process
+       ],
+       [V || {_K, V} <- ets:tab2list(Tab)]
+      ),
+    ok.
+
+do_t_recv_async_active(Opts) ->
+    MkOptsFn = maps:get(mk_opts_fn, Opts, fun(_Stream) -> #{mode => active} end),
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
     {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
                                 [{ranch_opts, #{shutdown => brutal_kill}}]),
@@ -306,7 +396,7 @@ t_recv_async_active(_TCConfig) ->
         #{message => <<"3">>}
     ]),
 
-    Handle1 = grpc_client:recv_async(Stream1, #{mode => active}),
+    Handle1 = grpc_client:recv_async(Stream1, MkOptsFn(Stream1)),
 
     {grpc_reply, _, {ok, Reply1Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
@@ -364,7 +454,7 @@ t_recv_async_active(_TCConfig) ->
     end,
 
     %% stream is already gone.
-    Handle2 = grpc_client:recv_async(Stream1, #{mode => once}),
+    Handle2 = grpc_client:recv_async(Stream1, MkOptsFn(Stream1)),
     ?assertReceive({grpc_reply, Handle2, {error, not_found}}),
 
     %% should be notified if client dies.
@@ -376,7 +466,7 @@ t_recv_async_active(_TCConfig) ->
     {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
-    ReplyAlias2 = grpc_client:recv_async(Stream2, #{mode => once}),
+    ReplyAlias2 = grpc_client:recv_async(Stream2, MkOptsFn(Stream2)),
 
     #{client_pid := ClientPid2} = Stream2,
     exit(ClientPid2, kill),

@@ -86,12 +86,15 @@
 -record(recv_async_caller, {dest :: active_owner()}).
 -type recv_async_caller() :: #recv_async_caller{}.
 
+-record(recv_async_reply_fn, {fn, args, alias}).
+-type recv_async_reply_fn() :: #recv_async_reply_fn{}.
+
 %% calls/casts/infos/continues
 -record(close, {stream_ref :: stream_ref()}).
 -record(recv_async, {
     stream_ref :: stream_ref(),
     mode :: recv_async_mode(),
-    dest :: active_owner()
+    dest :: recv_async_caller() | recv_async_reply_fn()
 }).
 
 -type stream_ref() :: gun:stream_ref().
@@ -173,7 +176,7 @@
                                   RemoteState :: stream_state()}
                    , mqueue   := [binary() | {eos, trailers()}]
                    , hangs    := [{caller(), ts()}]
-                   , ?active_owner := ?undefined | recv_async_caller()
+                   , ?active_owner := ?undefined | recv_async_caller() | recv_async_reply_fn()
                    , recvbuff := binary()
                    , sendbuff := iolist()
                    , sendbuff_size := non_neg_integer()
@@ -345,7 +348,14 @@ recv_async(GStream, Opts) when
             active -> demonitor
         end,
     ReplyAlias = monitor(process, ClientPid, [{alias, UnaliasOpt}]),
-    RecvAsync = #recv_async{dest = ReplyAlias, mode = Mode, stream_ref = StreamRef},
+    Dest =
+        case Opts of
+            #{reply_fn := {Fn, Args}} when is_function(Fn), is_list(Args) ->
+                #recv_async_reply_fn{fn = Fn, args = Args, alias = ReplyAlias};
+            #{} ->
+                #recv_async_caller{dest = ReplyAlias}
+        end,
+    RecvAsync = #recv_async{dest = Dest, mode = Mode, stream_ref = StreamRef},
     ok = gen_server:cast(ClientPid, RecvAsync),
     ReplyAlias.
 
@@ -654,6 +664,15 @@ run_events([{reply, From, Msg}|Es]) ->
 reply_caller(#recv_async_caller{dest = Dest}, Msg) ->
     _ = Dest ! {grpc_reply, Dest, Msg},
     ok;
+reply_caller(#recv_async_reply_fn{fn = Fn, args = Args, alias = ReplyAlias}, Msg) ->
+    try
+        _ = apply(Fn, [Msg, ReplyAlias | Args]),
+        ok
+    catch
+        Kind:Reason:Stacktrace ->
+            ?LOG(error, "[gRPC Client] reply fn crashed: ~p", [{Kind, Reason, Stacktrace}]),
+            ok
+    end;
 reply_caller({_, _} = From, Msg) ->
     %% gen_server:from()
     _ = gen_server:reply(From, Msg),
@@ -700,7 +719,9 @@ stream_handle({gun_data, _GunPid, _StreamRef, nofin, Data},
             case clean_hangs(Stream#{recvbuff => Rest}) of
                 #{hangs := [], ?active_owner := ?undefined, mqueue := MQueue} = NStream ->
                     {ok, NStream#{mqueue => MQueue ++ Frames}};
-                #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+                #{?active_owner := Caller, mqueue := MQueue} = NStream when
+                      Caller /= ?undefined
+                ->
                     {ok, [{reply, Caller, {ok, MQueue ++ Frames}}], NStream};
                 #{hangs := [{From, _}|NHangs], mqueue := MQueue} = NStream ->
                     {ok, [{reply, From, {ok, MQueue ++ Frames}}], NStream#{hangs => NHangs}}
@@ -728,7 +749,9 @@ stream_handle(Info, Stream) ->
 
 handle_remote_closed(Trailers, Stream = #{st := {closed, _}}) ->
     case clean_hangs(Stream#{st => {closed, closed}}) of
-        #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+        #{?active_owner := Caller, mqueue := MQueue} = NStream when
+              Caller /= ?undefined
+        ->
             #{hangs := Hangs} = NStream,
             Event1 = {reply, Caller, {ok, MQueue ++ [{eos, Trailers}]}},
             Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, Hangs),
@@ -743,7 +766,9 @@ handle_remote_closed(Trailers, Stream = #{st := {closed, _}}) ->
     end;
 handle_remote_closed(Trailers, Stream = #{st := {Ls, _}}) ->
     case clean_hangs(Stream#{st => {Ls, closed}}) of
-        #{?active_owner := #recv_async_caller{} = Caller, mqueue := MQueue} = NStream ->
+        #{?active_owner := Caller, mqueue := MQueue} = NStream when
+              Caller /= ?undefined
+        ->
             #{hangs := Hangs} = NStream,
             Event1 = {reply, Caller, {ok, MQueue ++ [{eos, Trailers}]}},
             Events2 = lists:map(fun({F, _}) -> {reply, F, {error, closed}} end, Hangs),
@@ -771,7 +796,7 @@ reply_hangs(DroppedStream, Result) ->
 
 reply_active_owner(DroppedStream, Result) ->
     case DroppedStream of
-        #{?active_owner := #recv_async_caller{} = Caller} ->
+        #{?active_owner := Caller} when Caller /= ?undefined ->
             reply_caller(Caller, Result);
         #{} ->
             ok
@@ -791,10 +816,10 @@ reply_gun_down_drop_streams(Reason, WhichStreams, State0) ->
     maps:foreach(
       fun(_, #{hangs := Hangs, ?active_owner := ActiveOwner}) ->
         case ActiveOwner of
-            #recv_async_caller{} = Caller ->
-                reply_caller(Caller, {error, {connection_down, Reason}});
             ?undefined ->
-                ok
+                ok;
+            Caller ->
+                reply_caller(Caller, {error, {connection_down, Reason}})
         end,
         lists:foreach(fun({From, EndTS}) ->
             EndTS > NowTS andalso
@@ -825,9 +850,8 @@ handle_close_stream(StreamRef, State0) ->
 
 handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
     %% can emulate by using the existing read call with infinity timeout.
-    #recv_async{dest = Dest, stream_ref = StreamRef} = RecvAsync,
+    #recv_async{dest = Caller, stream_ref = StreamRef} = RecvAsync,
     #state{streams = Streams} = State0,
-    Caller = #recv_async_caller{dest = Dest},
     case maps:find(StreamRef, Streams) of
         error ->
             reply_caller(Caller, {error, not_found}),
@@ -841,9 +865,8 @@ handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
               State0)
     end;
 handle_recv_async(#recv_async{mode = active} = RecvAsync, State0) ->
-    #recv_async{dest = Dest, stream_ref = StreamRef} = RecvAsync,
+    #recv_async{dest = Caller, stream_ref = StreamRef} = RecvAsync,
     #state{streams = Streams} = State0,
-    Caller = #recv_async_caller{dest = Dest},
     case maps:find(StreamRef, Streams) of
         error ->
             reply_caller(Caller, {error, not_found}),
