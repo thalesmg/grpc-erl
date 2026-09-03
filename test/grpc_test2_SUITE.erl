@@ -101,6 +101,7 @@ t_health_check(Cfg) ->
 
 
     grpc:stop_server(?SERVER_NAME),
+    ct:sleep(100),
     ?assertNot(lists:all(WorkersHealthCheck, WorkersPid)),
 
     _ = grpc_client_sup:stop_channel_pool(?CHANN_NAME),
