@@ -32,7 +32,7 @@
         , send/4
         , recv/1
         , recv/2
-        , recv_async/2
+        , async_install_receiver/2
         , map_recv_async_reply/2
         ]).
 
@@ -91,7 +91,7 @@
 
 %% calls/casts/infos/continues
 -record(close, {stream_ref :: stream_ref()}).
--record(recv_async, {
+-record(install_receiver, {
     stream_ref :: stream_ref(),
     mode :: recv_async_mode(),
     dest :: recv_async_caller() | recv_async_reply_fn()
@@ -333,8 +333,8 @@ recv(#{def        := Def,
             {ok, Msgs}
     end.
 
--spec recv_async(grpcstream(), recv_async_opts()) -> reference().
-recv_async(GStream, Opts) when
+-spec async_install_receiver(grpcstream(), recv_async_opts()) -> reference().
+async_install_receiver(GStream, Opts) when
     map_get(mode, Opts) == once;
     map_get(mode, Opts) == active
 ->
@@ -355,7 +355,7 @@ recv_async(GStream, Opts) when
             #{} ->
                 #recv_async_caller{dest = ReplyAlias}
         end,
-    RecvAsync = #recv_async{dest = Dest, mode = Mode, stream_ref = StreamRef},
+    RecvAsync = #install_receiver{dest = Dest, mode = Mode, stream_ref = StreamRef},
     ok = gen_server:cast(ClientPid, RecvAsync),
     ReplyAlias.
 
@@ -506,7 +506,7 @@ handle_call(_Request, _From, State) ->
 handle_cast(#close{stream_ref = StreamRef}, State0) ->
     State = handle_close_stream(StreamRef, State0),
     {noreply, State};
-handle_cast(#recv_async{} = RecvAsync, State0) ->
+handle_cast(#install_receiver{} = RecvAsync, State0) ->
     State = handle_recv_async(RecvAsync, State0),
     {noreply, State};
 handle_cast(_Msg, State) ->
@@ -848,9 +848,9 @@ handle_close_stream(StreamRef, State0) ->
             State
     end.
 
-handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
+handle_recv_async(#install_receiver{mode = once} = RecvAsync, State0) ->
     %% can emulate by using the existing read call with infinity timeout.
-    #recv_async{dest = Caller, stream_ref = StreamRef} = RecvAsync,
+    #install_receiver{dest = Caller, stream_ref = StreamRef} = RecvAsync,
     #state{streams = Streams} = State0,
     case maps:find(StreamRef, Streams) of
         error ->
@@ -864,8 +864,8 @@ handle_recv_async(#recv_async{mode = once} = RecvAsync, State0) ->
               Streams,
               State0)
     end;
-handle_recv_async(#recv_async{mode = active} = RecvAsync, State0) ->
-    #recv_async{dest = Caller, stream_ref = StreamRef} = RecvAsync,
+handle_recv_async(#install_receiver{mode = active} = RecvAsync, State0) ->
+    #install_receiver{dest = Caller, stream_ref = StreamRef} = RecvAsync,
     #state{streams = Streams} = State0,
     case maps:find(StreamRef, Streams) of
         error ->

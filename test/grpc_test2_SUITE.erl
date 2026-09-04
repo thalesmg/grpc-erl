@@ -233,7 +233,7 @@ do_t_recv_async_once(Opts) ->
         ?assertReceive({grpc_req_enter, _, _, _}),
 
     Opts1 = MkOptsFn(Stream1),
-    Handle1 = grpc_client:recv_async(Stream1, Opts1),
+    Handle1 = grpc_client:async_install_receiver(Stream1, Opts1),
 
     %% even though we set mode to once, we may receive a batch of replies (including
     %% trailers if the server happens to close the connection).
@@ -260,7 +260,7 @@ do_t_recv_async_once(Opts) ->
     ]),
     ?assertNotReceive({grpc_reply, _, _}),
 
-    Handle2 = grpc_client:recv_async(Stream1, Opts1),
+    Handle2 = grpc_client:async_install_receiver(Stream1, Opts1),
     {grpc_reply, _, {ok, Reply2Raw}} = ?assertReceive({grpc_reply, Handle2, _}),
     ?assertMatch(
        [ #{message := <<"4">>}
@@ -279,7 +279,7 @@ do_t_recv_async_once(Opts) ->
 
     HandlerPid1 ! continue,
 
-    Handle3 = grpc_client:recv_async(Stream1, Opts1),
+    Handle3 = grpc_client:async_install_receiver(Stream1, Opts1),
     {grpc_reply, _, {ok, Reply3Raw}} = ?assertReceive({grpc_reply, Handle3, _}),
     %% race: might receive trailers bundled with batch, or later.
     case grpc_client:map_recv_async_reply(Stream1, Reply3Raw) of
@@ -288,7 +288,7 @@ do_t_recv_async_once(Opts) ->
         , #{message := <<"9">>}
         ] ->
             ct:pal("waiting for trailers"),
-            Handle4 = grpc_client:recv_async(Stream1, Opts1),
+            Handle4 = grpc_client:async_install_receiver(Stream1, Opts1),
             {grpc_reply, _, {ok, Reply4Raw}} = ?assertReceive({grpc_reply, Handle4, _}),
             ?assertMatch(
                [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
@@ -308,7 +308,7 @@ do_t_recv_async_once(Opts) ->
     ?assertNotReceive({grpc_reply, Handle2, _}),
 
     %% stream is already gone.
-    Handle5 = grpc_client:recv_async(Stream1, Opts1),
+    Handle5 = grpc_client:async_install_receiver(Stream1, Opts1),
     ?assertReceive({grpc_reply, Handle5, {error, not_found}}),
 
     %% should be notified if client dies.
@@ -321,7 +321,7 @@ do_t_recv_async_once(Opts) ->
         ?assertReceive({grpc_req_enter, _, _, _}),
 
     Opts2 = MkOptsFn(Stream2),
-    ReplyAlias2 = grpc_client:recv_async(Stream2, Opts2),
+    ReplyAlias2 = grpc_client:async_install_receiver(Stream2, Opts2),
 
     #{client_pid := ClientPid2} = Stream2,
     exit(ClientPid2, kill),
@@ -396,7 +396,7 @@ do_t_recv_async_active(Opts) ->
         #{message => <<"3">>}
     ]),
 
-    Handle1 = grpc_client:recv_async(Stream1, MkOptsFn(Stream1)),
+    Handle1 = grpc_client:async_install_receiver(Stream1, MkOptsFn(Stream1)),
 
     {grpc_reply, _, {ok, Reply1Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
@@ -454,7 +454,7 @@ do_t_recv_async_active(Opts) ->
     end,
 
     %% stream is already gone.
-    Handle2 = grpc_client:recv_async(Stream1, MkOptsFn(Stream1)),
+    Handle2 = grpc_client:async_install_receiver(Stream1, MkOptsFn(Stream1)),
     ?assertReceive({grpc_reply, Handle2, {error, not_found}}),
 
     %% should be notified if client dies.
@@ -466,7 +466,7 @@ do_t_recv_async_active(Opts) ->
     {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
-    ReplyAlias2 = grpc_client:recv_async(Stream2, MkOptsFn(Stream2)),
+    ReplyAlias2 = grpc_client:async_install_receiver(Stream2, MkOptsFn(Stream2)),
 
     #{client_pid := ClientPid2} = Stream2,
     exit(ClientPid2, kill),
