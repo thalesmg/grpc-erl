@@ -612,3 +612,31 @@ t_misbehaving_server(_) ->
       ),
 
     ok.
+
+%% smoke test to verify we're able to return a status code _and_ a message from the grpc
+%% server (non-streaming handler).
+t_custom_error_code_and_message_non_streaming(_) ->
+    Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
+    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
+                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
+    TestPid = self(),
+    TestPidBin = iolist_to_binary(pid_to_list(TestPid)),
+
+    Helper = spawn_link(fun() ->
+        Res = test_client:test_deadline(#{ms => 3_000},
+                                        #{<<"test_pid">> => TestPidBin},
+                                        #{channel => ?CHANN_NAME,
+                                          timeout => 2000}
+                                       ),
+        TestPid ! {response, Res}
+    end),
+
+    {grpc_req_enter, HandlerPid1, GRPCReq1, _Meta1} =
+        ?assertReceive({grpc_req_enter, _, _, _}),
+
+    HandlerPid1 ! {return, {error, ?GRPC_STATUS_DATA_LOSS, <<"who am i?">>}},
+
+    {response, {error, {data_loss, <<"who am i?">>}}} = ?assertReceive({response, _}),
+
+    ok.
