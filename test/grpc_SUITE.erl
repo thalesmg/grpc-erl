@@ -43,7 +43,7 @@ groups() ->
         t_record_chat,
         t_reconnect_no_gun_leak
     ],
-    [{http, Tests}, {https,Tests}].
+    [{http, Tests}, {https, Tests}].
 
 init_per_group(GrpName, Cfg) ->
     _ = application:ensure_all_started(grpc),
@@ -53,28 +53,44 @@ init_per_group(GrpName, Cfg) ->
     Cert = filename:join([TestDir, "certs", "cert.pem"]),
     Key = filename:join([TestDir, "certs", "key.pem"]),
 
-    Services = #{protos => [grpc_greeter_pb, grpc_route_guide_pb],
-                 services => #{'Greeter' => greeter_svr,
-                               'routeguide.RouteGuide' => route_guide_svr}
-                },
-    Options = case GrpName of
-                  https ->
-                      [{ssl_options, [{cacertfile, CA},
-                                      {certfile, Cert},
-                                      {keyfile, Key}]}];
-                  _ -> []
-              end,
-    ClientOps = case GrpName of
-                    https ->
-                        #{gun_opts =>
-                          #{transport => ssl,
-                            tls_opts => [{cacertfile, CA}, {verify, verify_none}]}};
-                    _ -> #{}
-                end,
-    SvrAddr = case GrpName of
-                  https -> "https://127.0.0.1:10000";
-                  _ -> "http://127.0.0.1:10000"
-              end,
+    Services = #{
+        protos => [grpc_greeter_pb, grpc_route_guide_pb],
+        services => #{
+            'Greeter' => greeter_svr,
+            'routeguide.RouteGuide' => route_guide_svr
+        }
+    },
+    Options =
+        case GrpName of
+            https ->
+                [
+                    {ssl_options, [
+                        {cacertfile, CA},
+                        {certfile, Cert},
+                        {keyfile, Key}
+                    ]}
+                ];
+            _ ->
+                []
+        end,
+    ClientOps =
+        case GrpName of
+            https ->
+                #{
+                    gun_opts =>
+                        #{
+                            transport => ssl,
+                            tls_opts => [{cacertfile, CA}, {verify, verify_none}]
+                        }
+                };
+            _ ->
+                #{}
+        end,
+    SvrAddr =
+        case GrpName of
+            https -> "https://127.0.0.1:10000";
+            _ -> "http://127.0.0.1:10000"
+        end,
 
     {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services, Options),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, SvrAddr, ClientOps),
@@ -90,23 +106,33 @@ end_per_group(_GrpName, _Cfg) ->
 %%--------------------------------------------------------------------
 
 t_say_hello(_) ->
-    ?assertMatch({ok, _, _},
-                 greeter_client:say_hello(#{name => <<"Xiao Ming">>}, #{channel => ?CHANN_NAME})).
+    ?assertMatch(
+        {ok, _, _},
+        greeter_client:say_hello(#{name => <<"Xiao Ming">>}, #{channel => ?CHANN_NAME})
+    ).
 
 t_get_feature(_) ->
-    Point = #{latitude => 1,
-              longitude => 1
-             },
-    ?assertMatch({ok, _, _},
-                 routeguide_route_guide_client:get_feature(Point, #{channel => ?CHANN_NAME})).
+    Point = #{
+        latitude => 1,
+        longitude => 1
+    },
+    ?assertMatch(
+        {ok, _, _},
+        routeguide_route_guide_client:get_feature(Point, #{channel => ?CHANN_NAME})
+    ).
 
 t_list_features(_) ->
     {ok, Stream} = routeguide_route_guide_client:list_features(#{}, #{channel => ?CHANN_NAME}),
     grpc_client:send(Stream, #{}, fin),
-    ?assertMatch([#{name := <<"City1">>},
-                  #{name := <<"City2">>},
-                  #{name := <<"City3">>},
-                  {eos,[{<<"grpc-status">>,<<"0">>}]}], recv_n(Stream, 4)).
+    ?assertMatch(
+        [
+            #{name := <<"City1">>},
+            #{name := <<"City2">>},
+            #{name := <<"City3">>},
+            {eos, [{<<"grpc-status">>, <<"0">>}]}
+        ],
+        recv_n(Stream, 4)
+    ).
 
 t_record_route(_) ->
     {ok, Stream} = routeguide_route_guide_client:record_route(#{}, #{channel => ?CHANN_NAME}),
@@ -114,8 +140,13 @@ t_record_route(_) ->
     grpc_client:send(Stream, #{latitude => 2, longitude => 2}),
     timer:sleep(100),
     grpc_client:send(Stream, #{latitude => 3, longitude => 3}, fin),
-    ?assertMatch([#{point_count := 3},
-                  {eos,[{<<"grpc-status">>,<<"0">>}]}], recv_n(Stream, 2)).
+    ?assertMatch(
+        [
+            #{point_count := 3},
+            {eos, [{<<"grpc-status">>, <<"0">>}]}
+        ],
+        recv_n(Stream, 2)
+    ).
 
 t_record_chat(_) ->
     {ok, Stream} = routeguide_route_guide_client:route_chat(#{}, #{channel => ?CHANN_NAME}),
@@ -146,9 +177,11 @@ t_reconnect_no_gun_leak(TCConfig) ->
     ?assertMatch(ok, grpc_client:health_check(Worker0, #{connect_timeout => 10_000})),
     %% should not have leaked pids
     PidsAfter = get_gun_pids(),
-    ?assertNot(length(PidsAfter) > length(PidsBefore), #{pids_before => PidsBefore,
-                                                         pids_after => PidsAfter,
-                                                         new_pids => PidsAfter -- PidsBefore}),
+    ?assertNot(length(PidsAfter) > length(PidsBefore), #{
+        pids_before => PidsBefore,
+        pids_after => PidsAfter,
+        new_pids => PidsAfter -- PidsBefore
+    }),
     ok.
 
 %%--------------------------------------------------------------------

@@ -22,34 +22,38 @@
 -include("grpc.hrl").
 
 %% APIs
--export([ recv/1
-        , recv/2
-        , reply/2
-        ]).
+-export([
+    recv/1,
+    recv/2,
+    reply/2
+]).
 
 %% cowboy callbacks
 -export([init/2]).
 
 %% Internal callbacks
--export([ handle_in/2
-        , handle_out/3
-        ]).
+-export([
+    handle_in/2,
+    handle_out/3
+]).
 
 -export_type([stream/0, error_response/0]).
 
--type stream() :: #{ req           := cowboy_req:req()
-                   , rest          := binary()
-                   , metadata      := map()
-                   , encoding      := grpc_frame:encoding()
-                   , compression   := grpc_frame:encoding() %% TODO: Figure out types
-                   , decoder       := function()
-                   , encoder       := function()
-                   , handler       := {atom(), atom()}
-                   , is_unary      := boolean()
-                   , input_stream  := boolean()
-                   , output_stream := boolean()
-                   , client_info   := map()
-                   }.
+-type stream() :: #{
+    req := cowboy_req:req(),
+    rest := binary(),
+    metadata := map(),
+    encoding := grpc_frame:encoding(),
+    %% TODO: Figure out types
+    compression := grpc_frame:encoding(),
+    decoder := function(),
+    encoder := function(),
+    handler := {atom(), atom()},
+    is_unary := boolean(),
+    input_stream := boolean(),
+    output_stream := boolean(),
+    client_info := map()
+}.
 
 %% TODO: Figure out types.
 -type error_response() :: term().
@@ -62,10 +66,15 @@ recv(St) ->
     recv(St, 15000).
 
 -spec recv(stream(), timeout()) -> {more | eos, [map()], stream()}.
-recv(St = #{req         := Req,
-            rest        := Rest,
-            decoder     := Decoder,
-            compression := Compression}, Timeout) ->
+recv(
+    St = #{
+        req := Req,
+        rest := Rest,
+        decoder := Decoder,
+        compression := Compression
+    },
+    Timeout
+) ->
     {More, Bytes, NReq} = cowboy_req:read_body(Req, #{length => 5, period => Timeout}),
     {NRest, Frames} = grpc_frame:split(<<Rest/binary, Bytes/binary>>, Compression),
 
@@ -80,13 +89,20 @@ recv(St = #{req         := Req,
 
 reply(St, Resp) when is_map(Resp) ->
     reply(St, [Resp]);
-
-reply(#{req         := Req,
-        encoder     := Encoder,
-        compression := Compression}, Resps) ->
-    IoData = lists:map(fun(F) ->
-                grpc_frame:encode(Compression, F)
-             end, lists:map(Encoder, Resps)),
+reply(
+    #{
+        req := Req,
+        encoder := Encoder,
+        compression := Compression
+    },
+    Resps
+) ->
+    IoData = lists:map(
+        fun(F) ->
+            grpc_frame:encode(Compression, F)
+        end,
+        lists:map(Encoder, Resps)
+    ),
     ok = cowboy_req:stream_body(IoData, nofin, Req).
 
 %%--------------------------------------------------------------------
@@ -94,14 +110,19 @@ reply(#{req         := Req,
 
 init(Req, Options) ->
     St = do_init_state(
-           #{req => Req,
-             rest => <<>>,
-             metadata => #{},
-             encoding => identity,
-             compression => maps:get(compression, Options, identity),
-             timeout => infinity}, Req),
+        #{
+            req => Req,
+            rest => <<>>,
+            metadata => #{},
+            encoding => identity,
+            compression => maps:get(compression, Options, identity),
+            timeout => infinity
+        },
+        Req
+    ),
     Services = maps:get(services, Options, #{}),
-    RpcServicesAndName = {_, ReqRpc} =
+    RpcServicesAndName =
+        {_, ReqRpc} =
         {cowboy_req:binding(service, Req), cowboy_req:binding(method, Req)},
     case maps:get(RpcServicesAndName, Services, undefined) of
         undefined ->
@@ -111,26 +132,36 @@ init(Req, Options) ->
                 {true, ClientInfo} ->
                     ReqRpc1 = list_to_existing_atom(grpc_lib:list_snake_case(ReqRpc)),
                     NSt = St#{
-                            decoder => decoder_func(Defs),
-                            encoder => encoder_func(Defs),
-                            handler => {maps:get(handler, Defs), ReqRpc1},
-                            is_unary => not maps:get(input_stream, Defs)
-                                        andalso not maps:get(output_stream, Defs),
-                            input_stream => maps:get(input_stream, Defs),
-                            output_stream => maps:get(output_stream, Defs),
-                            client_info => ClientInfo
-                           },
+                        decoder => decoder_func(Defs),
+                        encoder => encoder_func(Defs),
+                        handler => {maps:get(handler, Defs), ReqRpc1},
+                        is_unary => not maps:get(input_stream, Defs) andalso
+                            not maps:get(output_stream, Defs),
+                        input_stream => maps:get(input_stream, Defs),
+                        output_stream => maps:get(output_stream, Defs),
+                        client_info => ClientInfo
+                    },
                     try
                         before_loop(send_headers_first(NSt))
-                    catch T:R:Stk ->
-                        ?LOG(error, "Stream process crashed: ~p, ~p, stacktrace: ~p~n",
-                                     [T, R, Stk]),
-                        shutdown(?GRPC_STATUS_INTERNAL,
-                                 <<"Internal Error: unexpected crash">>, St)
+                    catch
+                        T:R:Stk ->
+                            ?LOG(
+                                error,
+                                "Stream process crashed: ~p, ~p, stacktrace: ~p~n",
+                                [T, R, Stk]
+                            ),
+                            shutdown(
+                                ?GRPC_STATUS_INTERNAL,
+                                <<"Internal Error: unexpected crash">>,
+                                St
+                            )
                     end;
                 _ ->
-                    shutdown(?GRPC_STATUS_UNAUTHENTICATED,
-                             <<"Not Authenticated">>, St)
+                    shutdown(
+                        ?GRPC_STATUS_UNAUTHENTICATED,
+                        <<"Not Authenticated">>,
+                        St
+                    )
             end
     end.
 
@@ -147,9 +178,10 @@ process_header(<<"user-agent">>, Value, Acc) ->
     Acc#{user_agent => Value};
 process_header(<<"content-type">>, Value, Acc) ->
     Acc#{content_type => Value};
-process_header(K, _Value, Acc)
-  when K == <<"te">>;
-       K == <<"content-length">> ->
+process_header(K, _Value, Acc) when
+    K == <<"te">>;
+    K == <<"content-length">>
+->
     %% XXX: not clear what should be done with this header
     Acc;
 process_header(Key, Value, #{metadata := Metadata} = Acc) ->
@@ -190,11 +222,12 @@ before_loop(St = #{is_unary := true}) ->
                     shutdown(?GRPC_STATUS_OK, <<"">>, NSt)
             end;
         {error, _Reason} ->
-            shutdown(?GRPC_STATUS_INTERNAL,
-                     <<"Internal Error: failed to receive body bytes">>,
-                     St)
+            shutdown(
+                ?GRPC_STATUS_INTERNAL,
+                <<"Internal Error: failed to receive body bytes">>,
+                St
+            )
     end;
-
 before_loop(St = #{is_unary := false}) ->
     try
         Metadata = maps:get(metadata, St),
@@ -205,12 +238,18 @@ before_loop(St = #{is_unary := false}) ->
             {Code, Reason, NSt} ->
                 shutdown(Code, Reason, NSt)
         end
-    catch T:R:Stk ->
-        ?LOG(error, "Handle frame crashed: {~p, ~p} stacktrace: ~0p~n",
-                     [T, R, Stk]),
-        shutdown(?GRPC_STATUS_INTERNAL,
-                 <<"Internal Error: crashed to execute callback function">>,
-                 St)
+    catch
+        T:R:Stk ->
+            ?LOG(
+                error,
+                "Handle frame crashed: {~p, ~p} stacktrace: ~0p~n",
+                [T, R, Stk]
+            ),
+            shutdown(
+                ?GRPC_STATUS_INTERNAL,
+                <<"Internal Error: crashed to execute callback function">>,
+                St
+            )
     end.
 
 events([], St) ->
@@ -228,23 +267,26 @@ events([{F, Args} | Events], St) ->
 shutdown(Status, Message, St) ->
     Req = maps:get(req, St),
     Trailers0 = #{<<"grpc-status">> => Status},
-    Trailers1 = case Message of
-                    <<>> -> Trailers0;
-                    _ -> Trailers0#{<<"grpc-message">> => Message}
-                end,
+    Trailers1 =
+        case Message of
+            <<>> -> Trailers0;
+            _ -> Trailers0#{<<"grpc-message">> => Message}
+        end,
     cowboy_send_trailers(Trailers1, Req),
     {ok, Req, []}.
 
 headers(St) ->
     Meta = maps:get(metadata, St),
-    Headers = case maps:get(compression, St) of
-                  gzip ->
-                      Meta#{<<"grpc-encoding">> => <<"gzip">>};
-                  _ -> Meta
-              end,
+    Headers =
+        case maps:get(compression, St) of
+            gzip ->
+                Meta#{<<"grpc-encoding">> => <<"gzip">>};
+            _ ->
+                Meta
+        end,
     NHeaders = Headers#{
-                 <<"content-type">> => <<"application/grpc">>
-                },
+        <<"content-type">> => <<"application/grpc">>
+    },
     grpc_lib:maybe_encode_headers(NHeaders).
 
 %% Ret :: {shutdown, Code, Message}
@@ -267,10 +309,14 @@ handle_in(Frame, St) ->
             {error, Code, Message} ->
                 {shutdown, Code, Message}
         end
-    catch T:R:Stk ->
-        ?LOG(error, "Handle frame crashed: {~p, ~p} stacktrace: ~0p~n",
-                     [T, R, Stk]),
-        {shutdown, ?GRPC_STATUS_INTERNAL, <<"RPC Execution Crashed">>}
+    catch
+        T:R:Stk ->
+            ?LOG(
+                error,
+                "Handle frame crashed: {~p, ~p} stacktrace: ~0p~n",
+                [T, R, Stk]
+            ),
+            {shutdown, ?GRPC_STATUS_INTERNAL, <<"RPC Execution Crashed">>}
     end.
 
 handle_out(reply, Resp, St) ->

@@ -51,8 +51,12 @@ end_per_suite(_Cfg) ->
     _ = application:stop(grpc).
 
 init_per_testcase(t_deadline, Cfg) ->
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, ?config(services, Cfg),
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        ?config(services, Cfg),
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     Cfg;
 init_per_testcase(_TestCase, Cfg) ->
@@ -84,22 +88,31 @@ do_receive_n(N, Handle, Stream, Acc0) ->
 %%--------------------------------------------------------------------
 
 t_deadline(_) ->
-    ?assertMatch({error, {deadline_exceeded, _}},
-                 test_client:test_deadline(#{ms => 3000},
-                                           #{channel => ?CHANN_NAME,
-                                             timeout => 2000}
-                                          )),
+    ?assertMatch(
+        {error, {deadline_exceeded, _}},
+        test_client:test_deadline(
+            #{ms => 3000},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        )
+    ),
     receive
         Msg ->
             ?assert({should_not_receive_a_garbage_msg, Msg})
     after 3000 ->
-              ok
+        ok
     end.
 
 t_health_check(Cfg) ->
     Services = ?config(services, Cfg),
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
 
     WorkersHealthCheck =
@@ -114,7 +127,6 @@ t_health_check(Cfg) ->
 
     ?assert(lists:all(WorkersHealthCheck, WorkersPid)),
 
-
     grpc:stop_server(?SERVER_NAME),
     ct:sleep(100),
     ?assertNot(lists:all(WorkersHealthCheck, WorkersPid)),
@@ -125,23 +137,30 @@ t_health_check(Cfg) ->
 
 t_close_stream(_TCConfig) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
     %% call
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     MRef1 =
         receive
             {grpc_req_enter, HandlerPid1, _GRPCReq1, _Meta1} ->
                 monitor(process, HandlerPid1)
         after 3_000 ->
-                ct:fail("didn't enter the handler")
+            ct:fail("didn't enter the handler")
         end,
     ok = grpc_client:close(Stream1, #{}),
     receive
@@ -160,16 +179,19 @@ t_close_stream(_TCConfig) ->
 
     %% cast
     {ok, Stream2} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     MRef2 =
         receive
             {grpc_req_enter, HandlerPid2, _GRPCReq2, _Meta2} ->
                 monitor(process, HandlerPid2)
         after 3_000 ->
-                ct:fail("didn't enter the handler")
+            ct:fail("didn't enter the handler")
         end,
     ok = grpc_client:close_async(Stream2),
     receive
@@ -195,12 +217,13 @@ t_recv_async_once_reply_fn(_TCConfig) ->
     Tab = ets:new(spy, [public, ordered_set]),
     MkOptsFn = fun(Stream) ->
         Fn = fun(Reply0, ReplyAlias, Stream0, Tab0) ->
-            Reply = case Reply0 of
-                {ok, Frames} ->
-                    grpc_client:map_recv_async_reply(Stream0, Frames);
-                Error ->
-                    Error
-            end,
+            Reply =
+                case Reply0 of
+                    {ok, Frames} ->
+                        grpc_client:map_recv_async_reply(Stream0, Frames);
+                    Error ->
+                        Error
+                end,
             ets:insert(Tab0, {{erlang:monotonic_time(), ReplyAlias}, Reply}),
             ReplyAlias ! {grpc_reply, ReplyAlias, Reply0},
             ok
@@ -211,39 +234,50 @@ t_recv_async_once_reply_fn(_TCConfig) ->
     Opts = #{mk_opts_fn => MkOptsFn},
     do_t_recv_async_once(Opts),
     ?assertMatch(
-       [ [ #{message := <<"1">>}
-         , #{message := <<"2">>}
-         , #{message := <<"3">>}
-         ]
-       , [ #{message := <<"4">>}
-         , #{message := <<"5">>}
-         , #{message := <<"6">>}
-         ]
-       , [ #{message := <<"7">>}
-         , #{message := <<"8">>}
-         , #{message := <<"9">>}
-         ]
-       , [{eos, _}]
-       , {error, not_found}
-       %% obviously, we don't get the down signal registered if we kill the process
-       ],
-       [V || {_K, V} <- ets:tab2list(Tab)]
-      ),
+        [
+            [
+                #{message := <<"1">>},
+                #{message := <<"2">>},
+                #{message := <<"3">>}
+            ],
+            [
+                #{message := <<"4">>},
+                #{message := <<"5">>},
+                #{message := <<"6">>}
+            ],
+            [
+                #{message := <<"7">>},
+                #{message := <<"8">>},
+                #{message := <<"9">>}
+            ],
+            [{eos, _}],
+            {error, not_found}
+            %% obviously, we don't get the down signal registered if we kill the process
+        ],
+        [V || {_K, V} <- ets:tab2list(Tab)]
+    ),
     ok.
 
 do_t_recv_async_once(Opts) ->
     MkOptsFn = maps:get(mk_opts_fn, Opts, fun(_Stream) -> #{mode => once} end),
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -260,12 +294,13 @@ do_t_recv_async_once(Opts) ->
 
     {grpc_reply, _, {ok, Reply1Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
-       [ #{message := <<"1">>}
-       , #{message := <<"2">>}
-       , #{message := <<"3">>}
-       ],
-       grpc_client:map_recv_async_reply(Stream1, Reply1Raw)
-      ),
+        [
+            #{message := <<"1">>},
+            #{message := <<"2">>},
+            #{message := <<"3">>}
+        ],
+        grpc_client:map_recv_async_reply(Stream1, Reply1Raw)
+    ),
 
     %% further replies shouldn't be received unless asked for.
     grpc_stream:reply(GRPCReq1, [
@@ -278,12 +313,13 @@ do_t_recv_async_once(Opts) ->
     Handle2 = grpc_client:async_install_receiver(Stream1, Opts1),
     {grpc_reply, _, {ok, Reply2Raw}} = ?assertReceive({grpc_reply, Handle2, _}),
     ?assertMatch(
-       [ #{message := <<"4">>}
-       , #{message := <<"5">>}
-       , #{message := <<"6">>}
-       ],
-       grpc_client:map_recv_async_reply(Stream1, Reply2Raw)
-      ),
+        [
+            #{message := <<"4">>},
+            #{message := <<"5">>},
+            #{message := <<"6">>}
+        ],
+        grpc_client:map_recv_async_reply(Stream1, Reply2Raw)
+    ),
 
     grpc_stream:reply(GRPCReq1, [
         #{message => <<"7">>},
@@ -298,22 +334,24 @@ do_t_recv_async_once(Opts) ->
     {grpc_reply, _, {ok, Reply3Raw}} = ?assertReceive({grpc_reply, Handle3, _}),
     %% race: might receive trailers bundled with batch, or later.
     case grpc_client:map_recv_async_reply(Stream1, Reply3Raw) of
-        [ #{message := <<"7">>}
-        , #{message := <<"8">>}
-        , #{message := <<"9">>}
+        [
+            #{message := <<"7">>},
+            #{message := <<"8">>},
+            #{message := <<"9">>}
         ] ->
             ct:pal("waiting for trailers"),
             Handle4 = grpc_client:async_install_receiver(Stream1, Opts1),
             {grpc_reply, _, {ok, Reply4Raw}} = ?assertReceive({grpc_reply, Handle4, _}),
             ?assertMatch(
-               [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
-               grpc_client:map_recv_async_reply(Stream1, Reply4Raw)
-              ),
+                [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
+                grpc_client:map_recv_async_reply(Stream1, Reply4Raw)
+            ),
             ok;
-        [ #{message := <<"7">>}
-        , #{message := <<"8">>}
-        , #{message := <<"9">>}
-        , {eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}
+        [
+            #{message := <<"7">>},
+            #{message := <<"8">>},
+            #{message := <<"9">>},
+            {eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}
         ] ->
             ct:pal("got trailers"),
             ok;
@@ -328,10 +366,13 @@ do_t_recv_async_once(Opts) ->
 
     %% should be notified if client dies.
     {ok, Stream2} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -352,12 +393,13 @@ t_recv_async_active_reply_fn(_TCConfig) ->
     Tab = ets:new(spy, [public, ordered_set]),
     MkOptsFn = fun(Stream) ->
         Fn = fun(Reply0, ReplyAlias, Stream0, Tab0) ->
-            Reply = case Reply0 of
-                {ok, Frames} ->
-                    grpc_client:map_recv_async_reply(Stream0, Frames);
-                Error ->
-                    Error
-            end,
+            Reply =
+                case Reply0 of
+                    {ok, Frames} ->
+                        grpc_client:map_recv_async_reply(Stream0, Frames);
+                    Error ->
+                        Error
+                end,
             ets:insert(Tab0, {{erlang:monotonic_time(), ReplyAlias}, Reply}),
             ReplyAlias ! {grpc_reply, ReplyAlias, Reply0},
             ok
@@ -368,39 +410,50 @@ t_recv_async_active_reply_fn(_TCConfig) ->
     Opts = #{mk_opts_fn => MkOptsFn},
     do_t_recv_async_active(Opts),
     ?assertMatch(
-       [ [ #{message := <<"1">>}
-         , #{message := <<"2">>}
-         , #{message := <<"3">>}
-         ]
-       , [ #{message := <<"4">>}
-         , #{message := <<"5">>}
-         , #{message := <<"6">>}
-         ]
-       , [ #{message := <<"7">>}
-         , #{message := <<"8">>}
-         , #{message := <<"9">>}
-         ]
-       , [{eos, _}]
-       , {error, not_found}
-       %% obviously, we don't get the down signal registered if we kill the process
-       ],
-       [V || {_K, V} <- ets:tab2list(Tab)]
-      ),
+        [
+            [
+                #{message := <<"1">>},
+                #{message := <<"2">>},
+                #{message := <<"3">>}
+            ],
+            [
+                #{message := <<"4">>},
+                #{message := <<"5">>},
+                #{message := <<"6">>}
+            ],
+            [
+                #{message := <<"7">>},
+                #{message := <<"8">>},
+                #{message := <<"9">>}
+            ],
+            [{eos, _}],
+            {error, not_found}
+            %% obviously, we don't get the down signal registered if we kill the process
+        ],
+        [V || {_K, V} <- ets:tab2list(Tab)]
+    ),
     ok.
 
 do_t_recv_async_active(Opts) ->
     MkOptsFn = maps:get(mk_opts_fn, Opts, fun(_Stream) -> #{mode => active} end),
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -415,12 +468,13 @@ do_t_recv_async_active(Opts) ->
 
     {grpc_reply, _, {ok, Reply1Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
-       [ #{message := <<"1">>}
-       , #{message := <<"2">>}
-       , #{message := <<"3">>}
-       ],
-       grpc_client:map_recv_async_reply(Stream1, Reply1Raw)
-      ),
+        [
+            #{message := <<"1">>},
+            #{message := <<"2">>},
+            #{message := <<"3">>}
+        ],
+        grpc_client:map_recv_async_reply(Stream1, Reply1Raw)
+    ),
 
     grpc_stream:reply(GRPCReq1, [
         #{message => <<"4">>},
@@ -430,12 +484,13 @@ do_t_recv_async_active(Opts) ->
 
     {grpc_reply, _, {ok, Reply2Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
-       [ #{message := <<"4">>}
-       , #{message := <<"5">>}
-       , #{message := <<"6">>}
-       ],
-       grpc_client:map_recv_async_reply(Stream1, Reply2Raw)
-      ),
+        [
+            #{message := <<"4">>},
+            #{message := <<"5">>},
+            #{message := <<"6">>}
+        ],
+        grpc_client:map_recv_async_reply(Stream1, Reply2Raw)
+    ),
 
     grpc_stream:reply(GRPCReq1, [
         #{message => <<"7">>},
@@ -446,21 +501,23 @@ do_t_recv_async_active(Opts) ->
     {grpc_reply, _, {ok, Reply3Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
     %% race: might receive trailers bundled with batch, or later.
     case grpc_client:map_recv_async_reply(Stream1, Reply3Raw) of
-        [ #{message := <<"7">>}
-        , #{message := <<"8">>}
-        , #{message := <<"9">>}
+        [
+            #{message := <<"7">>},
+            #{message := <<"8">>},
+            #{message := <<"9">>}
         ] ->
             ct:pal("waiting for trailers"),
             {grpc_reply, _, {ok, Reply4Raw}} = ?assertReceive({grpc_reply, Handle1, _}),
             ?assertMatch(
-               [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
-               grpc_client:map_recv_async_reply(Stream1, Reply4Raw)
-              ),
+                [{eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}],
+                grpc_client:map_recv_async_reply(Stream1, Reply4Raw)
+            ),
             ok;
-        [ #{message := <<"7">>}
-        , #{message := <<"8">>}
-        , #{message := <<"9">>}
-        , {eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}
+        [
+            #{message := <<"7">>},
+            #{message := <<"8">>},
+            #{message := <<"9">>},
+            {eos, [{<<"grpc-status">>, ?GRPC_STATUS_OK}]}
         ] ->
             ct:pal("got trailers"),
             ok;
@@ -474,10 +531,13 @@ do_t_recv_async_active(Opts) ->
 
     %% should be notified if client dies.
     {ok, Stream2} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid2, _GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -492,16 +552,23 @@ do_t_recv_async_active(Opts) ->
 
 t_recv_sync_active_large_payload(_) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -509,11 +576,13 @@ t_recv_sync_active_large_payload(_) ->
     NMessages = 10,
     HugeMessages =
         lists:map(
-          fun(N) ->
-                  NBin = integer_to_binary(N),
-                  HugePayload = binary:copy(NBin, HugeSize),
-                  #{message => HugePayload}
-          end, lists:seq(1, NMessages)),
+            fun(N) ->
+                NBin = integer_to_binary(N),
+                HugePayload = binary:copy(NBin, HugeSize),
+                #{message => HugePayload}
+            end,
+            lists:seq(1, NMessages)
+        ),
     lists:map(fun(Msg) -> grpc_stream:reply(GRPCReq1, [Msg]) end, HugeMessages),
     ct:sleep(100),
 
@@ -527,16 +596,23 @@ t_recv_sync_active_large_payload(_) ->
 
 t_recv_async_active_large_payload(_) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
 
@@ -544,11 +620,13 @@ t_recv_async_active_large_payload(_) ->
     NMessages = 10,
     HugeMessages =
         lists:map(
-          fun(N) ->
-                  NBin = integer_to_binary(N),
-                  HugePayload = binary:copy(NBin, HugeSize),
-                  #{message => HugePayload}
-          end, lists:seq(1, NMessages)),
+            fun(N) ->
+                NBin = integer_to_binary(N),
+                HugePayload = binary:copy(NBin, HugeSize),
+                #{message => HugePayload}
+            end,
+            lists:seq(1, NMessages)
+        ),
     lists:map(fun(Msg) -> grpc_stream:reply(GRPCReq1, [Msg]) end, HugeMessages),
 
     Opts = #{mode => active},
@@ -569,18 +647,24 @@ t_recv_async_active_large_payload(_) ->
 %% message.
 t_misbehaving_server(_) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPidBin = iolist_to_binary(pid_to_list(self())),
 
-
     %% once
     {ok, Stream1} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid1, GRPCReq1, _Meta1} =
         ?assertReceive({grpc_req_enter, _, _, _}),
     Handle1 = grpc_client:async_install_receiver(Stream1, #{mode => once}),
@@ -589,16 +673,19 @@ t_misbehaving_server(_) ->
 
     {grpc_reply, _, {ok, Res1}} = ?assertReceive({grpc_reply, Handle1, _}),
     ?assertMatch(
-       {raw, <<"Not found\n">>},
-       lists:keyfind(raw, 1, Res1)
-      ),
+        {raw, <<"Not found\n">>},
+        lists:keyfind(raw, 1, Res1)
+    ),
 
     %% active
     {ok, Stream2} =
-        test_client:test_stream_out(#{<<"test_pid">> => TestPidBin},
-                                    #{channel => ?CHANN_NAME,
-                                      timeout => 2000}
-                                   ),
+        test_client:test_stream_out(
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
     {grpc_req_enter, _HandlerPid2, GRPCReq2, _Meta2} =
         ?assertReceive({grpc_req_enter, _, _, _}),
     Handle2 = grpc_client:async_install_receiver(Stream2, #{mode => active}),
@@ -607,9 +694,9 @@ t_misbehaving_server(_) ->
 
     {grpc_reply, _, {ok, Res2}} = ?assertReceive({grpc_reply, Handle2, _}),
     ?assertMatch(
-       {raw, <<"Not found\n">>},
-       lists:keyfind(raw, 1, Res2)
-      ),
+        {raw, <<"Not found\n">>},
+        lists:keyfind(raw, 1, Res2)
+    ),
 
     ok.
 
@@ -617,18 +704,25 @@ t_misbehaving_server(_) ->
 %% server (non-streaming handler).
 t_custom_error_code_and_message_non_streaming(_) ->
     Services = #{protos => [grpc_test_pb], services => #{'Test' => test2_svr}},
-    {ok, _} = grpc:start_server(?SERVER_NAME, 10000, Services,
-                                [{ranch_opts, #{shutdown => brutal_kill}}]),
+    {ok, _} = grpc:start_server(
+        ?SERVER_NAME,
+        10000,
+        Services,
+        [{ranch_opts, #{shutdown => brutal_kill}}]
+    ),
     {ok, _} = grpc_client_sup:create_channel_pool(?CHANN_NAME, ?SERVER_ADDR, #{}),
     TestPid = self(),
     TestPidBin = iolist_to_binary(pid_to_list(TestPid)),
 
     Helper = spawn_link(fun() ->
-        Res = test_client:test_deadline(#{ms => 3_000},
-                                        #{<<"test_pid">> => TestPidBin},
-                                        #{channel => ?CHANN_NAME,
-                                          timeout => 2000}
-                                       ),
+        Res = test_client:test_deadline(
+            #{ms => 3_000},
+            #{<<"test_pid">> => TestPidBin},
+            #{
+                channel => ?CHANN_NAME,
+                timeout => 2000
+            }
+        ),
         TestPid ! {response, Res}
     end),
 
