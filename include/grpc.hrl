@@ -23,7 +23,7 @@
 -define(GRPC_STATUS_INVALID_ARGUMENT, <<"3">>).
 -define(GRPC_STATUS_DEADLINE_EXCEEDED, <<"4">>).
 -define(GRPC_STATUS_NOT_FOUND, <<"5">>).
--define(GRPC_STATUS_ALREADY_EXISTS , <<"6">>).
+-define(GRPC_STATUS_ALREADY_EXISTS, <<"6">>).
 -define(GRPC_STATUS_PERMISSION_DENIED, <<"7">>).
 -define(GRPC_STATUS_RESOURCE_EXHAUSTED, <<"8">>).
 -define(GRPC_STATUS_FAILED_PRECONDITION, <<"9">>).
@@ -35,7 +35,8 @@
 -define(GRPC_STATUS_DATA_LOSS, <<"15">>).
 -define(GRPC_STATUS_UNAUTHENTICATED, <<"16">>).
 
--type grpc_status() :: binary(). %% GRPC_STATUS_OK...GRPC_STATUS_UNAUTHENTICATED
+%% GRPC_STATUS_OK...GRPC_STATUS_UNAUTHENTICATED
+-type grpc_status() :: binary().
 
 -type grpc_message() :: binary().
 
@@ -45,8 +46,7 @@
 
 -define(LOG(Level, Format), ?LOG(Level, Format, [])).
 
--define(LOG(Level, Format, Args),
-        begin
-          (logger:log(Level,#{},#{report_cb => fun(_) -> {(Format), (Args)} end}))
-        end).
+-define(LOG(Level, Format, Args), begin
+    (logger:log(Level, #{}, #{report_cb => fun(_) -> {(Format), (Args)} end}))
+end).
 -endif.

@@ -18,8 +18,7 @@
 
 -include("grpc.hrl").
 
--export([ codename/1
-        ]).
+-export([codename/1]).
 
 -spec codename(grpc_status()) -> grpc_status_name().
 codename(?GRPC_STATUS_OK) -> ok;

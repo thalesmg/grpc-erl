@@ -23,8 +23,8 @@
 %%--------------------------------------------------------------------
 %% Callbacks
 
--spec server_reflection_info(grpc_stream:stream(), grpc:metadata())
-    -> {ok, grpc_stream:stream()}.
+-spec server_reflection_info(grpc_stream:stream(), grpc:metadata()) ->
+    {ok, grpc_stream:stream()}.
 
 server_reflection_info(Stream, _Md) ->
     LoopRecv = fun _Lp(St) ->

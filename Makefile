@@ -33,3 +33,9 @@ clean:
 distclean:
 	@rm -rf _build
 	@rm -f data/app.*.config data/vm.*.args rebar.lock
+
+fmt:
+	$(REBAR) fmt -w
+
+fmt-check:
+	$(REBAR) fmt -c

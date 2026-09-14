@@ -3,6 +3,17 @@ name: Run test cases
 on: [push, pull_request]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: setup-beam
+        uses: erlef/setup-beam@v1.24.1
+        with:
+          otp-version: '28'
+          rebar3-version: '3.25.1'
+      - name: check fmt
+        run: make fmt-check
 
   linux:
     runs-on: ubuntu-latest

@@ -1,12 +1,12 @@
 %% -*- mode: erlang -*-
-{application, grpc,
- [{description, "An Erlang implementation of gRPC"},
-  {vsn, "git"},
-  {registered, []},
-  {mod, {grpc_app, []}},
-  {applications, [kernel,stdlib,ssl,public_key,gproc,cowboy,gun]},
-  {env,[]},
-  {modules, []},
-  {licenses, ["Apache 2.0"]},
-  {links, []}
- ]}.
+{application, grpc, [
+    {description, "An Erlang implementation of gRPC"},
+    {vsn, "git"},
+    {registered, []},
+    {mod, {grpc_app, []}},
+    {applications, [kernel, stdlib, ssl, public_key, gproc, cowboy, gun]},
+    {env, []},
+    {modules, []},
+    {licenses, ["Apache 2.0"]},
+    {links, []}
+]}.

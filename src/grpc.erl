@@ -17,10 +17,11 @@
 -module(grpc).
 
 %% APIs
--export([ start_server/3
-        , start_server/4
-        , stop_server/1
-        ]).
+-export([
+    start_server/3,
+    start_server/4,
+    stop_server/1
+]).
 
 -ifdef(TEST).
 -compile(export_all).
@@ -28,13 +29,15 @@
 -endif.
 
 -type listen_on() :: {inet:ip_address(), inet:port_number()} | inet:port_number().
--type services() :: #{protos := [module()],
-                      services := #{ServiceName :: atom() => HandlerModule :: module()}
-                     }.
+-type services() :: #{
+    protos := [module()],
+    services := #{ServiceName :: atom() => HandlerModule :: module()}
+}.
 
--type option() :: {ssl_options, ssl:tls_server_option()}
-                | {ranch_opts, ranch:opts()}
-                | {cowboy_opts, cowboy_http2:opts()}.
+-type option() ::
+    {ssl_options, ssl:tls_server_option()}
+    | {ranch_opts, ranch:opts()}
+    | {cowboy_opts, cowboy_http2:opts()}.
 
 %% TODO: Figure out types.
 -type metadata_key() :: term().
@@ -44,78 +47,104 @@
 %% NOTE: Expected by generated code.
 -type options() :: grpc_client:options().
 
--export_type([ metadata/0
-             , metadata_key/0
-             , metadata_value/0
-             , options/0]).
+-export_type([
+    metadata/0,
+    metadata_key/0,
+    metadata_value/0,
+    options/0
+]).
 
 %%--------------------------------------------------------------------
 %% APIs
 %%--------------------------------------------------------------------
 
--spec start_server(any(), listen_on(), services())
-    -> {ok, pid()} | {error, term()}.
+-spec start_server(any(), listen_on(), services()) ->
+    {ok, pid()} | {error, term()}.
 start_server(Name, ListenOn, Services) ->
     start_server(Name, ListenOn, Services, []).
 
--spec start_server(any(), listen_on(), services(), [option()])
-    -> {ok, pid()} | {error, term()}.
+-spec start_server(any(), listen_on(), services(), [option()]) ->
+    {ok, pid()} | {error, term()}.
 %% @doc Start a gRPC server
 start_server(Name, ListenOn, Services, Options) ->
     Services1 = enable_default_services(
-                  proplists:get_value(enable_default_services, Options, all),
-                  Services),
+        proplists:get_value(enable_default_services, Options, all),
+        Services
+    ),
 
     UserOptions = #{services => compile_service_rules(Services1)},
     start_http_server(Name, listen(ListenOn), Options, UserOptions).
 
 enable_default_services(all, Services) ->
-    DefatServicesName = ['grpc.health.v1.Health',
-                         'grpc.reflection.v1alpha.ServerReflection'
-                        ],
+    DefatServicesName = [
+        'grpc.health.v1.Health',
+        'grpc.reflection.v1alpha.ServerReflection'
+    ],
     enable_default_services(DefatServicesName, Services);
-
 enable_default_services([], Services) ->
     Services;
-enable_default_services(['grpc.health.v1.Health' | Ls],
-                        #{protos := Protos, services := Services}) ->
+enable_default_services(
+    ['grpc.health.v1.Health' | Ls],
+    #{protos := Protos, services := Services}
+) ->
     enable_default_services(
-      Ls,
-      #{protos => ['grpc_health_pb' | Protos],
-        services => Services#{'grpc.health.v1.Health' => grpc_health_svr}}
-     );
-enable_default_services(['grpc.reflection.v1alpha.ServerReflection' | Ls],
-                        #{protos := Protos, services := Services}) ->
+        Ls,
+        #{
+            protos => ['grpc_health_pb' | Protos],
+            services => Services#{'grpc.health.v1.Health' => grpc_health_svr}
+        }
+    );
+enable_default_services(
+    ['grpc.reflection.v1alpha.ServerReflection' | Ls],
+    #{protos := Protos, services := Services}
+) ->
     enable_default_services(
-      Ls,
-      #{protos => ['grpc_reflection_pb' | Protos],
-        services =>
-          Services#{
-            'grpc.reflection.v1alpha.ServerReflection' => grpc_reflection_svr}}
-     ).
+        Ls,
+        #{
+            protos => ['grpc_reflection_pb' | Protos],
+            services =>
+                Services#{
+                    'grpc.reflection.v1alpha.ServerReflection' => grpc_reflection_svr
+                }
+        }
+    ).
 
 %% @private
 %% {ServicesName, FunName} => ServiceDefs
 compile_service_rules(Services0) ->
     Protos = maps:get(protos, Services0, []),
 
-    Defineds = lists:foldr(fun(Pb, Acc) ->
-                   [{S, Pb} || S <- Pb:get_service_names()] ++ Acc
-               end, [], Protos),
+    Defineds = lists:foldr(
+        fun(Pb, Acc) ->
+            [{S, Pb} || S <- Pb:get_service_names()] ++ Acc
+        end,
+        [],
+        Protos
+    ),
     Services = maps:get(services, Services0, #{}),
-    maps:fold(fun(SvrName, Handler, Acc) ->
-        case lists:keyfind(SvrName, 1, Defineds) of
-            false -> Acc;
-            {_, Pb} ->
-                lists:foldl(fun(RpcName, Acc2) ->
-                    RpcDef = Pb:find_rpc_def(SvrName, RpcName),
-                    Acc2#{{atom_to_binary(SvrName, utf8),
-                           atom_to_binary(RpcName, utf8)
-                          } => RpcDef#{pb => Pb, handler => Handler}
-                         }
-                end, Acc, Pb:get_rpc_names(SvrName))
-        end
-    end, #{}, Services).
+    maps:fold(
+        fun(SvrName, Handler, Acc) ->
+            case lists:keyfind(SvrName, 1, Defineds) of
+                false ->
+                    Acc;
+                {_, Pb} ->
+                    lists:foldl(
+                        fun(RpcName, Acc2) ->
+                            RpcDef = Pb:find_rpc_def(SvrName, RpcName),
+                            Acc2#{
+                                {atom_to_binary(SvrName, utf8), atom_to_binary(RpcName, utf8)} => RpcDef#{
+                                    pb => Pb, handler => Handler
+                                }
+                            }
+                        end,
+                        Acc,
+                        Pb:get_rpc_names(SvrName)
+                    )
+            end
+        end,
+        #{},
+        Services
+    ).
 
 -spec stop_server(any()) -> ok | {error, not_found}.
 
@@ -124,23 +153,24 @@ stop_server(Name) ->
     cowboy:stop_listener(Name).
 
 %% @private
-listen({IPAddr, Port})
-  when is_tuple(IPAddr),
-       is_integer(Port) ->
+listen({IPAddr, Port}) when
+    is_tuple(IPAddr),
+    is_integer(Port)
+->
     {IPAddr, Port};
-listen(AddrStr)
-  when is_list(AddrStr);
-       is_binary(AddrStr) ->
+listen(AddrStr) when
+    is_list(AddrStr);
+    is_binary(AddrStr)
+->
     case re:split(AddrStr, ":", [{return, list}]) of
         [IPAddr, Port] ->
             {ok, IPAddr1} = inet:parse_address(IPAddr),
             {IPAddr1, list_to_integer(Port)};
         [Port] ->
-            {{0,0,0,0}, list_to_integer(Port)}
+            {{0, 0, 0, 0}, list_to_integer(Port)}
     end;
 listen(Port) when is_integer(Port) ->
-    {{0,0,0,0}, Port}.
-
+    {{0, 0, 0, 0}, Port}.
 
 %%--------------------------------------------------------------------
 %% Internal funcs
@@ -148,22 +178,25 @@ listen(Port) when is_integer(Port) ->
 
 start_http_server(Name, {Ip, Port}, Options, UserOptions) ->
     Dispatch = cowboy_router:compile(
-                 [{'_', [{"/:service/:method", grpc_stream, UserOptions}]}]
-                ),
-    ProtoOpts0 = #{env => #{dispatch => Dispatch},
-                   protocols => [http2],
-                   max_received_frame_rate => {100000, 1000},
-                   stream_handlers => [grpc_stream_h, cowboy_stream_h]
-                   },
+        [{'_', [{"/:service/:method", grpc_stream, UserOptions}]}]
+    ),
+    ProtoOpts0 = #{
+        env => #{dispatch => Dispatch},
+        protocols => [http2],
+        max_received_frame_rate => {100000, 1000},
+        stream_handlers => [grpc_stream_h, cowboy_stream_h]
+    },
 
     Ssloptions = proplists:get_value(ssl_options, Options, []),
-    TransOpts0 = #{max_connections => 1024000,
-                   socket_opts => [{ip, Ip}, {port, Port} | Ssloptions]
-                  },
+    TransOpts0 = #{
+        max_connections => 1024000,
+        socket_opts => [{ip, Ip}, {port, Port} | Ssloptions]
+    },
     TransOpts = maps:merge(proplists:get_value(ranch_opts, Options, #{}), TransOpts0),
     ProtoOpts = maps:merge(proplists:get_value(cowboy_opts, Options, #{}), ProtoOpts0),
-    StartFun = case Ssloptions of
-                   [] -> start_clear;
-                   _ -> start_tls
-               end,
+    StartFun =
+        case Ssloptions of
+            [] -> start_clear;
+            _ -> start_tls
+        end,
     cowboy:StartFun(Name, TransOpts, ProtoOpts).
