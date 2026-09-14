@@ -24,8 +24,20 @@
 %%--------------------------------------------------------------------
 %% Callbacks
 
-test_deadline(_Req, Meta) ->
-    {ok, #{message => <<>>}, Meta}.
+test_deadline(Req, Meta) ->
+    #{<<"test_pid">> := TestPidBin} = Meta,
+    TestPid = list_to_pid(binary_to_list(TestPidBin)),
+    TestPid ! {grpc_req_enter, self(), Req, Meta},
+    process_flag(trap_exit, true),
+    receive
+        {'EXIT', _, Reason} ->
+            TestPid ! {grpc_exit_signal, Reason},
+            exit(Reason);
+        continue ->
+            {ok, #{message => <<>>}, Meta};
+        {return, Ret} ->
+            Ret
+    end.
 
 test_stream_out(Req, Meta) ->
     #{<<"test_pid">> := TestPidBin} = Meta,
@@ -37,6 +49,7 @@ test_stream_out(Req, Meta) ->
             TestPid ! {grpc_exit_signal, Reason},
             exit(Reason);
         continue ->
-            ok
-    end,
-    {ok, Req}.
+            {ok, Req};
+        {return, Ret} ->
+            Ret
+    end.

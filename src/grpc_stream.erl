@@ -263,7 +263,9 @@ handle_in(Frame, St) ->
                 {ok, [{handle_out, [reply, Resp]}], St#{metadata => NMetadata}};
             {error, Code} ->
                 %% FIXME: Streaming: shutdown / reply_error ??
-                {shutdown, Code, <<"">>}
+                {shutdown, Code, <<"">>};
+            {error, Code, Message} ->
+                {shutdown, Code, Message}
         end
     catch T:R:Stk ->
         ?LOG(error, "Handle frame crashed: {~p, ~p} stacktrace: ~0p~n",
